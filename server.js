@@ -1,66 +1,63 @@
+// VERSION 3 PRO - DARK NEON UI
+// Replace your server.js with this file
+
 const express = require("express");
 const http = require("http");
 const { Server } = require("socket.io");
 
 const app = express();
-app.set("trust proxy", 1);
-
 const server = http.createServer(app);
+
 const io = new Server(server, {
   cors: { origin: "*" }
 });
 
 const PORT = process.env.PORT || 3000;
 
-// ---------------- DATA ----------------
+// ---------------- GAME DATA ----------------
 
 let players = [];
-let gameStarted = false;
-let roundActive = false;
-let round = 1;
 let scores = {};
-let timer = 10;
-let countdown = null;
+let round = 1;
+let timer = 12;
+let started = false;
+let playing = false;
+let game = "";
 
-let currentGame = "tap";
-
-const games = ["tap", "redgreen", "math"];
+const games = ["tap", "math", "door", "spam"];
+let countdown;
 
 // ---------------- HELPERS ----------------
 
-function alivePlayers() {
+function alive() {
   return players.filter(p => !p.out);
 }
 
 function resetGame() {
   players = [];
-  gameStarted = false;
-  roundActive = false;
-  round = 1;
   scores = {};
-  timer = 10;
-  currentGame = "tap";
-  if (countdown) clearInterval(countdown);
+  round = 1;
+  started = false;
+  playing = false;
 }
 
 function chooseGame() {
-  currentGame = games[Math.floor(Math.random() * games.length)];
+  game = games[Math.floor(Math.random() * games.length)];
 }
 
 function startRound() {
-  if (!gameStarted) return;
-  if (alivePlayers().length <= 1) return;
+  if (alive().length <= 1) return;
 
   chooseGame();
+  timer = 12;
+  playing = true;
 
-  roundActive = true;
-  scores = {};
-  timer = 10;
+  alive().forEach(p => scores[p.id] = 0);
 
   io.emit("roundStart", {
     round,
-    timer,
-    game: currentGame
+    game,
+    timer
   });
 
   countdown = setInterval(() => {
@@ -75,41 +72,31 @@ function startRound() {
 }
 
 function endRound() {
-  roundActive = false;
+  playing = false;
 
-  const alive = alivePlayers();
-
-  alive.forEach(p => {
-    if (!scores[p.id]) scores[p.id] = 0;
-  });
-
-  const results = alive
+  const list = alive()
     .map(p => ({
       id: p.id,
       name: p.name,
-      score: scores[p.id]
+      points: scores[p.id] || 0
     }))
-    .sort((a, b) => a.score - b.score);
+    .sort((a, b) => a.points - b.points);
 
-  const loser = results[0];
-  const found = players.find(p => p.id === loser.id);
-  if (found) found.out = true;
+  const loser = list[0];
+  const dead = players.find(p => p.id === loser.id);
+  if (dead) dead.out = true;
 
-  io.emit("roundEnd", {
-    evicted: loser.name,
-    scores: results
-  });
+  io.emit("scoreboard", list);
+  io.emit("roundEnd", loser.name);
 
-  io.emit("players", players);
-
-  if (alivePlayers().length === 1) {
-    io.emit("winner", alivePlayers()[0].name);
-    gameStarted = false;
+  if (alive().length === 1) {
+    io.emit("winner", alive()[0].name);
+    started = false;
     return;
   }
 
   round++;
-  setTimeout(startRound, 4000);
+  setTimeout(startRound, 5000);
 }
 
 // ---------------- WEBSITE ----------------
@@ -119,106 +106,170 @@ res.send(`
 <!DOCTYPE html>
 <html>
 <head>
-<title>Battle Game V2</title>
+<title>Neon Battle</title>
 <meta name="viewport" content="width=device-width, initial-scale=1">
 
 <style>
 body{
-background:#111;
-color:white;
+margin:0;
 font-family:Arial;
+background:#050505;
+color:white;
 text-align:center;
 padding:20px;
 }
+
+.panel{
+max-width:600px;
+margin:auto;
+background:#111;
+padding:25px;
+border-radius:18px;
+box-shadow:0 0 25px #00ffe1;
+}
+
 input,button{
-padding:12px;
-margin:5px;
+padding:14px;
+margin:6px;
 border:none;
-border-radius:8px;
+border-radius:10px;
 font-size:16px;
 }
-button{
-background:#00b894;
+
+input{
+width:220px;
+background:#222;
 color:white;
+}
+
+button{
+background:#00ffe1;
+color:black;
+font-weight:bold;
 cursor:pointer;
 }
-#actionBtn{
-display:none;
+
+button:hover{
+transform:scale(1.05);
+}
+
+.big{
 font-size:28px;
 padding:25px 40px;
 }
-#mathBox{
+
+.hidden{
 display:none;
 }
-pre{
-background:#222;
-padding:15px;
-border-radius:10px;
+
+#scoreboard{
 text-align:left;
-max-width:500px;
-margin:auto;
+background:#0f0f0f;
+padding:15px;
+border-radius:12px;
+margin-top:15px;
+white-space:pre-line;
 }
+
+.door{
+width:90px;
+height:120px;
+font-size:30px;
+}
+
+.red{
+background:#ff004c;
+color:white;
+}
+
+.green{
+background:#00ff99;
+}
+
 </style>
 </head>
-
 <body>
 
-<h1>Minigame Battle V2</h1>
+<div class="panel">
+
+<h1>⚡ Neon Battle ⚡</h1>
 
 <div id="joinBox">
 <input id="name" placeholder="Your Name">
-<button onclick="joinGame()">Join</button>
+<button onclick="joinGame()">JOIN</button>
 </div>
 
-<h2 id="status">Waiting for players...</h2>
+<h2 id="status">Waiting for 5 players...</h2>
 <h3 id="timer"></h3>
 
-<button id="actionBtn" onclick="mainAction()">GO!</button>
+<button id="mainBtn" class="big hidden" onclick="mainClick()">GO</button>
 
-<div id="mathBox">
-<h2 id="mathQuestion"></h2>
-<input id="mathAnswer" placeholder="Answer">
+<div id="mathBox" class="hidden">
+<h2 id="mathQ"></h2>
+<input id="mathA">
 <button onclick="submitMath()">Submit</button>
 </div>
 
-<pre id="players"></pre>
+<div id="doorBox" class="hidden">
+<button class="door" onclick="doorPick(1)">🚪1</button>
+<button class="door" onclick="doorPick(2)">🚪2</button>
+<button class="door" onclick="doorPick(3)">🚪3</button>
+</div>
+
+<div id="spamBox" class="hidden"></div>
+
+<div id="scoreboard"></div>
+
+</div>
 
 <script src="/socket.io/socket.io.js"></script>
-
 <script>
 const socket = io(window.location.origin,{
  transports:["websocket","polling"]
 });
 
-let currentGame = "";
-let green = true;
-let answer = 0;
+let currentGame="";
+let mathAns=0;
 
 function joinGame(){
- const name = document.getElementById("name").value || "Player";
- socket.emit("join",name);
+ let n=document.getElementById("name").value || "Player";
+ socket.emit("join",n);
 }
 
-function mainAction(){
+function hideAll(){
+ document.getElementById("mainBtn").classList.add("hidden");
+ document.getElementById("mathBox").classList.add("hidden");
+ document.getElementById("doorBox").classList.add("hidden");
+ document.getElementById("spamBox").classList.add("hidden");
+}
 
- if(currentGame === "tap"){
-   socket.emit("score");
- }
-
- if(currentGame === "redgreen"){
-   if(green){
-     socket.emit("score");
-   }else{
-     socket.emit("fail");
-   }
- }
-
+function mainClick(){
+ socket.emit("score");
 }
 
 function submitMath(){
- const val = Number(document.getElementById("mathAnswer").value);
- if(val === answer){
-   socket.emit("score");
+ let v=Number(document.getElementById("mathA").value);
+ if(v===mathAns) socket.emit("score");
+}
+
+function doorPick(n){
+ socket.emit("door",n);
+}
+
+function makeSpam(){
+ let box=document.getElementById("spamBox");
+ box.innerHTML="";
+ box.classList.remove("hidden");
+
+ for(let i=0;i<12;i++){
+   let b=document.createElement("button");
+   b.innerText = i===0 ? "TARGET" : "FAKE";
+   b.className = i===0 ? "green" : "red";
+   b.onclick = ()=>{
+     if(i===0) socket.emit("score");
+     else socket.emit("minus");
+   };
+   box.appendChild(b);
  }
 }
 
@@ -226,70 +277,60 @@ socket.on("joined",()=>{
  document.getElementById("joinBox").style.display="none";
 });
 
-socket.on("players",(list)=>{
- let txt="Players:\\n";
- list.forEach(p=>{
-   txt += p.name + (p.out ? " (OUT)" : "") + "\\n";
- });
- document.getElementById("players").textContent = txt;
-});
-
-socket.on("message",(msg)=>{
- document.getElementById("status").textContent = msg;
-});
-
-socket.on("roundStart",(data)=>{
- currentGame = data.game;
- document.getElementById("mathBox").style.display="none";
- document.getElementById("actionBtn").style.display="inline-block";
-
- if(currentGame==="tap"){
-   document.getElementById("status").textContent="TAP FAST!";
-   document.getElementById("actionBtn").innerText="TAP!";
- }
-
- if(currentGame==="redgreen"){
-   document.getElementById("status").textContent="Red Light Green Light";
-   document.getElementById("actionBtn").innerText="MOVE!";
-   green = true;
-
-   const switcher = setInterval(()=>{
-     green = !green;
-     document.getElementById("status").textContent =
-      green ? "GREEN LIGHT!" : "RED LIGHT!";
-   },1200);
-
-   setTimeout(()=>clearInterval(switcher),10000);
- }
-
- if(currentGame==="math"){
-   document.getElementById("actionBtn").style.display="none";
-   document.getElementById("mathBox").style.display="block";
-
-   let a = Math.floor(Math.random()*10)+1;
-   let b = Math.floor(Math.random()*10)+1;
-   answer = a+b;
-
-   document.getElementById("mathQuestion").innerText =
-   a + " + " + b + " = ?";
- }
-
+socket.on("message",(m)=>{
+ document.getElementById("status").innerText=m;
 });
 
 socket.on("tick",(t)=>{
- document.getElementById("timer").textContent="Time: "+t;
+ document.getElementById("timer").innerText="⏱ "+t;
 });
 
-socket.on("roundEnd",(data)=>{
- document.getElementById("actionBtn").style.display="none";
- document.getElementById("mathBox").style.display="none";
- document.getElementById("status").textContent =
- data.evicted + " eliminated!";
+socket.on("roundStart",(d)=>{
+ hideAll();
+ currentGame=d.game;
+
+ if(d.game==="tap"){
+   status.innerText="⚡ TAP RACE";
+   mainBtn.innerText="TAP!";
+   mainBtn.classList.remove("hidden");
+ }
+
+ if(d.game==="math"){
+   status.innerText="🧠 MATH RACE";
+   mathBox.classList.remove("hidden");
+   let a=Math.floor(Math.random()*10)+1;
+   let b=Math.floor(Math.random()*10)+1;
+   mathAns=a+b;
+   mathQ.innerText=a+" + "+b+" = ?";
+ }
+
+ if(d.game==="door"){
+   status.innerText="🚪 LUCKY DOOR";
+   doorBox.classList.remove("hidden");
+ }
+
+ if(d.game==="spam"){
+   status.innerText="🎯 SPAM DODGE";
+   makeSpam();
+ }
+});
+
+socket.on("scoreboard",(list)=>{
+ let txt="🏆 ROUND SCORES\\n\\n";
+ list.forEach((p,i)=>{
+   txt += (i+1)+". "+p.name+" - "+p.points+" pts\\n";
+ });
+ scoreboard.innerText=txt;
+});
+
+socket.on("roundEnd",(name)=>{
+ hideAll();
+ status.innerText="❌ "+name+" Eliminated";
 });
 
 socket.on("winner",(name)=>{
- document.getElementById("status").textContent =
- name + " WINS!";
+ hideAll();
+ status.innerText="👑 "+name+" WINS THE GAME!";
 });
 </script>
 
@@ -304,13 +345,13 @@ io.on("connection", socket => {
 
 socket.on("join", name => {
 
- if(gameStarted){
-   socket.emit("message","Game already started.");
+ if (started) {
+   socket.emit("message","Game already started");
    return;
  }
 
- if(players.length >= 5){
-   socket.emit("message","Lobby full.");
+ if (players.length >= 5) {
+   socket.emit("message","Lobby Full");
    return;
  }
 
@@ -322,14 +363,10 @@ socket.on("join", name => {
 
  socket.emit("joined");
 
- io.emit("players",players);
+ io.emit("message", players.length + "/5 Joined");
 
- if(players.length < 5){
-   io.emit("message",players.length + "/5 Players Joined");
- }
-
- if(players.length === 5){
-   gameStarted = true;
+ if (players.length === 5) {
+   started = true;
    io.emit("message","Starting...");
    setTimeout(startRound,3000);
  }
@@ -337,22 +374,28 @@ socket.on("join", name => {
 });
 
 socket.on("score",()=>{
- if(!roundActive) return;
- scores[socket.id] = (scores[socket.id] || 0) + 1;
+ if(!playing) return;
+ scores[socket.id]=(scores[socket.id]||0)+1;
 });
 
-socket.on("fail",()=>{
- if(!roundActive) return;
- scores[socket.id] = -999;
+socket.on("minus",()=>{
+ if(!playing) return;
+ scores[socket.id]=(scores[socket.id]||0)-1;
+});
+
+socket.on("door",(n)=>{
+ if(!playing) return;
+ let win=Math.floor(Math.random()*3)+1;
+ if(n===win){
+   scores[socket.id]=(scores[socket.id]||0)+5;
+ }else{
+   scores[socket.id]=(scores[socket.id]||0)-2;
+ }
 });
 
 socket.on("disconnect",()=>{
- players = players.filter(p=>p.id !== socket.id);
- io.emit("players",players);
-
- if(players.length===0){
-   resetGame();
- }
+ players = players.filter(p=>p.id!==socket.id);
+ if(players.length===0) resetGame();
 });
 
 });
@@ -360,5 +403,5 @@ socket.on("disconnect",()=>{
 // ---------------- START ----------------
 
 server.listen(PORT,()=>{
- console.log("Running on port "+PORT);
+ console.log("Running on "+PORT);
 });
