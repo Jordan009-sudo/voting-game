@@ -257,24 +257,39 @@ function submitMath(){
 }
 
 function buildSpam(){
- spamBox.innerHTML="";
  spamBox.classList.remove("hidden");
 
- for(let i=0;i<12;i++){
-   let b=document.createElement("button");
+ function render(){
+   spamBox.innerHTML="";
 
-   if(i===0){
-     b.innerText="TARGET";
-     b.className="green";
-     b.onclick=()=>socket.emit("score");
-   }else{
-     b.innerText="FAKE";
-     b.className="red";
-     b.onclick=()=>socket.emit("minus");
+   let targetIndex = Math.floor(Math.random()*12);
+
+   for(let i=0;i<12;i++){
+     let b=document.createElement("button");
+
+     if(i===targetIndex){
+       b.innerText="TARGET";
+       b.className="green";
+
+       b.onclick=()=>{
+         socket.emit("score");
+         render(); // move target instantly
+       };
+
+     }else{
+       b.innerText="FAKE";
+       b.className="red";
+
+       b.onclick=()=>{
+         socket.emit("minus");
+       };
+     }
+
+     spamBox.appendChild(b);
    }
-
-   spamBox.appendChild(b);
  }
+
+ render();
 }
 
 socket.on("joined", ()=>{
@@ -370,11 +385,17 @@ socket.on("join", name => {
     return;
   }
 
-  players.push({
-    id: socket.id,
-    name,
-    out:false
-  });
+  name = String(name || "").trim();
+
+if (!name) {
+  name = "Player" + (players.length + 1);
+}
+
+players.push({
+  id: socket.id,
+  name,
+  out:false
+});
 
   socket.emit("joined");
   sendPlayers();
