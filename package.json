@@ -1,6 +1,7 @@
 {
-  "name": "battle-game",
+  "name": "minigame-battle",
   "version": "1.0.0",
+  "description": "5 player elimination minigame",
   "main": "server.js",
   "scripts": {
     "start": "node server.js"
