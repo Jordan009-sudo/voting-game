@@ -1,18 +1,22 @@
+// server.js - FIXED v3.2
+// Eliminated players can no longer play
+// Clear elimination messages
+// Lobby/player list updates properly
+
 const express = require("express");
 const http = require("http");
 const { Server } = require("socket.io");
 
 const app = express();
-app.set("trust proxy", 1);
-
 const server = http.createServer(app);
+
 const io = new Server(server, {
   cors: { origin: "*" }
 });
 
 const PORT = process.env.PORT || 3000;
 
-// ---------------- GAME STATE ----------------
+// ---------------- STATE ----------------
 
 let players = [];
 let scores = {};
@@ -21,18 +25,30 @@ let playing = false;
 let round = 1;
 let timer = 12;
 let game = "";
-let countdown = null;
+let loop = null;
 
 const games = ["tap", "math", "door", "spam"];
 
 // ---------------- HELPERS ----------------
 
-function alive() {
+function alivePlayers() {
   return players.filter(p => !p.out);
 }
 
-function getPlayer(id) {
+function playerById(id) {
   return players.find(p => p.id === id);
+}
+
+function canPlay(id) {
+  const p = playerById(id);
+  if (!p) return false;
+  if (p.out) return false;
+  if (!playing) return false;
+  return true;
+}
+
+function sendPlayers() {
+  io.emit("players", players);
 }
 
 function resetGame() {
@@ -43,33 +59,29 @@ function resetGame() {
   round = 1;
   timer = 12;
   game = "";
-  if (countdown) clearInterval(countdown);
+  if (loop) clearInterval(loop);
 }
 
-function chooseGame() {
+function pickGame() {
   game = games[Math.floor(Math.random() * games.length)];
 }
 
-function safeAdd(id, amount) {
-  const p = getPlayer(id);
-  if (!playing) return;
-  if (!p) return;
-  if (p.out) return;
-
-  scores[id] = (scores[id] || 0) + amount;
-}
+// ---------------- GAME ----------------
 
 function startRound() {
-  if (alive().length <= 1) return;
+  if (alivePlayers().length <= 1) return;
 
-  chooseGame();
+  pickGame();
+
   playing = true;
   timer = 12;
   scores = {};
 
-  alive().forEach(p => {
+  alivePlayers().forEach(p => {
     scores[p.id] = 0;
   });
+
+  sendPlayers();
 
   io.emit("roundStart", {
     round,
@@ -77,12 +89,12 @@ function startRound() {
     timer
   });
 
-  countdown = setInterval(() => {
+  loop = setInterval(() => {
     timer--;
     io.emit("tick", timer);
 
     if (timer <= 0) {
-      clearInterval(countdown);
+      clearInterval(loop);
       endRound();
     }
   }, 1000);
@@ -91,7 +103,7 @@ function startRound() {
 function endRound() {
   playing = false;
 
-  const list = alive()
+  const board = alivePlayers()
     .map(p => ({
       id: p.id,
       name: p.name,
@@ -99,20 +111,22 @@ function endRound() {
     }))
     .sort((a, b) => a.points - b.points);
 
-  const loser = list[0];
-  const target = getPlayer(loser.id);
+  const loser = board[0];
+  const target = playerById(loser.id);
 
   if (target) target.out = true;
 
-  io.emit("scoreboard", list);
+  sendPlayers();
+
+  io.emit("scoreboard", board);
 
   io.emit("roundEnd", {
     name: loser.name,
     points: loser.points
   });
 
-  if (alive().length === 1) {
-    io.emit("winner", alive()[0].name);
+  if (alivePlayers().length === 1) {
+    io.emit("winner", alivePlayers()[0].name);
     started = false;
     return;
   }
@@ -121,14 +135,14 @@ function endRound() {
   setTimeout(startRound, 5000);
 }
 
-// ---------------- WEBSITE ----------------
+// ---------------- WEB ----------------
 
 app.get("/", (req, res) => {
 res.send(`
 <!DOCTYPE html>
 <html>
 <head>
-<title>Neon Battle v3.1</title>
+<title>Neon Battle v3.2</title>
 <meta name="viewport" content="width=device-width, initial-scale=1">
 
 <style>
@@ -140,16 +154,14 @@ background:#050505;
 color:white;
 text-align:center;
 }
-
 .panel{
-max-width:620px;
+max-width:650px;
 margin:auto;
 padding:25px;
 background:#111;
 border-radius:18px;
 box-shadow:0 0 25px #00ffe1;
 }
-
 input,button{
 padding:14px;
 margin:6px;
@@ -157,55 +169,30 @@ border:none;
 border-radius:10px;
 font-size:16px;
 }
-
 input{
+width:220px;
 background:#222;
 color:white;
-width:220px;
 }
-
 button{
 background:#00ffe1;
 color:black;
 font-weight:bold;
 cursor:pointer;
 }
-
-button:hover{
-transform:scale(1.05);
-}
-
-.big{
-font-size:28px;
-padding:25px 40px;
-}
-
-.hidden{
-display:none;
-}
-
-.red{
-background:#ff0055;
-color:white;
-}
-
-.green{
-background:#00ff88;
-}
-
-#scoreboard{
+button:hover{transform:scale(1.05)}
+.hidden{display:none}
+.big{font-size:28px;padding:25px 40px}
+.red{background:#ff0055;color:white}
+.green{background:#00ff88}
+.door{width:90px;height:120px;font-size:30px}
+#scoreboard,#players{
 margin-top:15px;
-background:#0d0d0d;
 padding:15px;
+background:#0d0d0d;
 border-radius:12px;
-text-align:left;
 white-space:pre-line;
-}
-
-.door{
-width:90px;
-height:120px;
-font-size:30px;
+text-align:left;
 }
 </style>
 </head>
@@ -213,7 +200,7 @@ font-size:30px;
 
 <div class="panel">
 
-<h1>⚡ Neon Battle v3.1 ⚡</h1>
+<h1>⚡ Neon Battle ⚡</h1>
 
 <div id="joinBox">
 <input id="name" placeholder="Your Name">
@@ -223,7 +210,7 @@ font-size:30px;
 <h2 id="status">Waiting for 5 players...</h2>
 <h3 id="timer"></h3>
 
-<button id="mainBtn" class="big hidden" onclick="mainClick()">GO</button>
+<button id="mainBtn" class="big hidden" onclick="socket.emit('score')">GO</button>
 
 <div id="mathBox" class="hidden">
 <h2 id="mathQ"></h2>
@@ -232,25 +219,24 @@ font-size:30px;
 </div>
 
 <div id="doorBox" class="hidden">
-<button class="door" onclick="pickDoor(1)">🚪1</button>
-<button class="door" onclick="pickDoor(2)">🚪2</button>
-<button class="door" onclick="pickDoor(3)">🚪3</button>
+<button class="door" onclick="socket.emit('door',1)">🚪1</button>
+<button class="door" onclick="socket.emit('door',2)">🚪2</button>
+<button class="door" onclick="socket.emit('door',3)">🚪3</button>
 </div>
 
 <div id="spamBox" class="hidden"></div>
 
+<div id="players"></div>
 <div id="scoreboard"></div>
 
 </div>
 
 <script src="/socket.io/socket.io.js"></script>
-
 <script>
 const socket = io(window.location.origin,{
  transports:["websocket","polling"]
 });
 
-let currentGame = "";
 let answer = 0;
 
 function hideGames(){
@@ -261,31 +247,21 @@ function hideGames(){
 }
 
 function joinGame(){
- let n = name.value || "Player";
- socket.emit("join", n);
-}
-
-function mainClick(){
- socket.emit("score");
+ socket.emit("join", name.value || "Player");
 }
 
 function submitMath(){
- let v = Number(mathA.value);
- if(v === answer){
+ if(Number(mathA.value) === answer){
    socket.emit("score");
  }
 }
 
-function pickDoor(n){
- socket.emit("door", n);
-}
-
 function buildSpam(){
- spamBox.innerHTML = "";
+ spamBox.innerHTML="";
  spamBox.classList.remove("hidden");
 
  for(let i=0;i<12;i++){
-   const b = document.createElement("button");
+   let b=document.createElement("button");
 
    if(i===0){
      b.innerText="TARGET";
@@ -305,6 +281,14 @@ socket.on("joined", ()=>{
  joinBox.style.display="none";
 });
 
+socket.on("players", list=>{
+ let txt="👥 PLAYERS\\n\\n";
+ list.forEach(p=>{
+   txt += p.name + (p.out ? " ❌ OUT" : " ✅ IN") + "\\n";
+ });
+ players.innerText = txt;
+});
+
 socket.on("message", msg=>{
  status.innerText = msg;
 });
@@ -315,8 +299,7 @@ socket.on("tick", t=>{
 
 socket.on("roundStart", data=>{
  hideGames();
- currentGame = data.game;
- scoreboard.innerText = "";
+ scoreboard.innerText="";
 
  if(data.game==="tap"){
    status.innerText="⚡ TAP RACE";
@@ -330,8 +313,8 @@ socket.on("roundStart", data=>{
 
    let a=Math.floor(Math.random()*10)+1;
    let b=Math.floor(Math.random()*10)+1;
-
    answer=a+b;
+
    mathQ.innerText=a+" + "+b+" = ?";
  }
 
@@ -346,19 +329,16 @@ socket.on("roundStart", data=>{
  }
 });
 
-socket.on("scoreboard", list=>{
+socket.on("scoreboard", board=>{
  let txt="🏆 ROUND SCORES\\n\\n";
-
- list.forEach((p,i)=>{
+ board.forEach((p,i)=>{
    txt += (i+1)+". "+p.name+" - "+p.points+" pts\\n";
  });
-
- scoreboard.innerText = txt;
+ scoreboard.innerText=txt;
 });
 
 socket.on("roundEnd", data=>{
  hideGames();
-
  status.innerText =
  "❌ " + data.name + " eliminated with " + data.points + " pts";
 });
@@ -374,73 +354,69 @@ socket.on("winner", name=>{
 `);
 });
 
-// ---------------- SOCKETS ----------------
+// ---------------- SOCKET ----------------
 
 io.on("connection", socket => {
 
 socket.on("join", name => {
 
- if(started){
-   socket.emit("message","Game already started");
-   return;
- }
+  if (started) {
+    socket.emit("message","Game already started");
+    return;
+  }
 
- if(players.length >= 5){
-   socket.emit("message","Lobby Full");
-   return;
- }
+  if (players.length >= 5) {
+    socket.emit("message","Lobby Full");
+    return;
+  }
 
- players.push({
-   id: socket.id,
-   name,
-   out:false
- });
+  players.push({
+    id: socket.id,
+    name,
+    out:false
+  });
 
- socket.emit("joined");
+  socket.emit("joined");
+  sendPlayers();
 
- io.emit("message", players.length + "/5 Joined");
+  io.emit("message", players.length + "/5 Joined");
 
- if(players.length === 5){
-   started = true;
-   io.emit("message","Starting...");
-   setTimeout(startRound, 3000);
- }
-
+  if (players.length === 5) {
+    started = true;
+    io.emit("message","Starting...");
+    setTimeout(startRound,3000);
+  }
 });
 
 socket.on("score", ()=>{
- safeAdd(socket.id, 1);
+  if (!canPlay(socket.id)) return;
+  scores[socket.id] = (scores[socket.id] || 0) + 1;
 });
 
 socket.on("minus", ()=>{
- safeAdd(socket.id, -1);
+  if (!canPlay(socket.id)) return;
+  scores[socket.id] = (scores[socket.id] || 0) - 1;
 });
 
-socket.on("door", n => {
+socket.on("door", n=>{
+  if (!canPlay(socket.id)) return;
 
- const p = getPlayer(socket.id);
- if(!playing) return;
- if(!p) return;
- if(p.out) return;
+  let lucky = Math.floor(Math.random()*3)+1;
 
- const win = Math.floor(Math.random()*3)+1;
-
- if(n === win){
-   safeAdd(socket.id, 5);
- }else{
-   safeAdd(socket.id, -2);
- }
-
+  if (n === lucky) {
+    scores[socket.id] = (scores[socket.id] || 0) + 5;
+  } else {
+    scores[socket.id] = (scores[socket.id] || 0) - 2;
+  }
 });
 
 socket.on("disconnect", ()=>{
+  players = players.filter(p => p.id !== socket.id);
+  sendPlayers();
 
- players = players.filter(p => p.id !== socket.id);
-
- if(players.length === 0){
-   resetGame();
- }
-
+  if (players.length === 0) {
+    resetGame();
+  }
 });
 
 });
@@ -448,5 +424,5 @@ socket.on("disconnect", ()=>{
 // ---------------- START ----------------
 
 server.listen(PORT, ()=>{
- console.log("Running on " + PORT);
+  console.log("Running on port " + PORT);
 });
