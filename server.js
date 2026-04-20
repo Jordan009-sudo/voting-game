@@ -6,24 +6,19 @@ const app = express();
 app.set("trust proxy", 1);
 
 const server = http.createServer(app);
-
 const io = new Server(server, {
-  cors: {
-    origin: "*"
-  }
+  cors: { origin: "*" }
 });
 
 const PORT = process.env.PORT || 3000;
 
-// -------------------- GAME DATA --------------------
-
 let players = [];
 let gameStarted = false;
+let roundActive = false;
 let round = 1;
 let scores = {};
 let timer = 10;
-
-// -------------------- HELPERS --------------------
+let countdown = null;
 
 function alivePlayers() {
   return players.filter(p => !p.out);
@@ -32,21 +27,24 @@ function alivePlayers() {
 function resetGame() {
   players = [];
   gameStarted = false;
+  roundActive = false;
   round = 1;
   scores = {};
   timer = 10;
+  if (countdown) clearInterval(countdown);
 }
 
 function startRound() {
+  if (!gameStarted) return;
+  if (alivePlayers().length <= 1) return;
+
+  roundActive = true;
   scores = {};
   timer = 10;
 
-  io.emit("roundStart", {
-    round,
-    timer
-  });
+  io.emit("roundStart", { round, timer });
 
-  const countdown = setInterval(() => {
+  countdown = setInterval(() => {
     timer--;
     io.emit("tick", timer);
 
@@ -58,20 +56,23 @@ function startRound() {
 }
 
 function endRound() {
-  alivePlayers().forEach(player => {
-    if (!scores[player.id]) scores[player.id] = 0;
+  roundActive = false;
+
+  const alive = alivePlayers();
+
+  alive.forEach(p => {
+    if (!scores[p.id]) scores[p.id] = 0;
   });
 
-  const results = alivePlayers()
-    .map(player => ({
-      id: player.id,
-      name: player.name,
-      score: scores[player.id]
+  const results = alive
+    .map(p => ({
+      id: p.id,
+      name: p.name,
+      score: scores[p.id]
     }))
     .sort((a, b) => a.score - b.score);
 
   const loser = results[0];
-
   const found = players.find(p => p.id === loser.id);
   if (found) found.out = true;
 
@@ -92,8 +93,6 @@ function endRound() {
   setTimeout(startRound, 4000);
 }
 
-// -------------------- WEBSITE --------------------
-
 app.get("/", (req, res) => {
   res.send(`
 <!DOCTYPE html>
@@ -101,48 +100,15 @@ app.get("/", (req, res) => {
 <head>
 <title>Battle Game</title>
 <meta name="viewport" content="width=device-width, initial-scale=1">
-
 <style>
-body{
-background:#111;
-color:white;
-font-family:Arial;
-text-align:center;
-padding:20px;
-}
-input,button{
-padding:12px;
-font-size:16px;
-margin:5px;
-border:none;
-border-radius:8px;
-}
-button{
-background:#00b894;
-color:white;
-cursor:pointer;
-}
-#tapBtn{
-font-size:28px;
-padding:25px 40px;
-display:none;
-}
-#box{
-max-width:500px;
-margin:auto;
-}
-pre{
-text-align:left;
-background:#222;
-padding:15px;
-border-radius:10px;
-}
+body{background:#111;color:#fff;font-family:Arial;text-align:center;padding:20px}
+input,button{padding:12px;margin:5px;border:none;border-radius:8px}
+button{background:#00b894;color:#fff;cursor:pointer}
+#tapBtn{display:none;font-size:28px;padding:25px 40px}
+pre{background:#222;padding:15px;border-radius:10px;text-align:left;max-width:500px;margin:auto}
 </style>
 </head>
-
 <body>
-
-<div id="box">
 
 <h1>Minigame Battle</h1>
 
@@ -153,18 +119,13 @@ border-radius:10px;
 
 <h2 id="status">Waiting for players...</h2>
 <h3 id="timer"></h3>
-
 <button id="tapBtn" onclick="tapNow()">TAP FAST!</button>
-
 <pre id="players"></pre>
 
-</div>
-
 <script src="/socket.io/socket.io.js"></script>
-
 <script>
 const socket = io(window.location.origin, {
-  transports: ["websocket", "polling"]
+  transports:["websocket","polling"]
 });
 
 function joinGame(){
@@ -176,53 +137,45 @@ function tapNow(){
   socket.emit("tap");
 }
 
-socket.on("joined", () => {
-  document.getElementById("joinBox").style.display = "none";
+socket.on("joined", ()=>{
+  document.getElementById("joinBox").style.display="none";
 });
 
-socket.on("players", (list) => {
-  let text = "Players:\\n";
-  list.forEach(p => {
-    text += p.name;
-    if (p.out) text += " (OUT)";
-    text += "\\n";
+socket.on("players", list=>{
+  let txt = "Players:\\n";
+  list.forEach(p=>{
+    txt += p.name + (p.out ? " (OUT)" : "") + "\\n";
   });
-  document.getElementById("players").textContent = text;
+  document.getElementById("players").textContent = txt;
 });
 
-socket.on("message", msg => {
+socket.on("message", msg=>{
   document.getElementById("status").textContent = msg;
 });
 
-socket.on("roundStart", data => {
-  document.getElementById("status").textContent =
-    "Round " + data.round + " Started!";
-  document.getElementById("tapBtn").style.display = "inline-block";
+socket.on("roundStart", data=>{
+  document.getElementById("status").textContent = "Round " + data.round;
+  document.getElementById("tapBtn").style.display="inline-block";
 });
 
-socket.on("tick", t => {
+socket.on("tick", t=>{
   document.getElementById("timer").textContent = "Time: " + t;
 });
 
-socket.on("roundEnd", data => {
-  document.getElementById("tapBtn").style.display = "none";
-  document.getElementById("status").textContent =
-    data.evicted + " was eliminated!";
+socket.on("roundEnd", data=>{
+  document.getElementById("tapBtn").style.display="none";
+  document.getElementById("status").textContent = data.evicted + " eliminated!";
 });
 
-socket.on("winner", name => {
-  document.getElementById("tapBtn").style.display = "none";
-  document.getElementById("status").textContent =
-    name + " WINS THE GAME!";
+socket.on("winner", name=>{
+  document.getElementById("tapBtn").style.display="none";
+  document.getElementById("status").textContent = name + " wins!";
 });
 </script>
-
 </body>
 </html>
 `);
 });
-
-// -------------------- SOCKETS --------------------
 
 io.on("connection", socket => {
 
@@ -247,21 +200,27 @@ io.on("connection", socket => {
     socket.emit("joined");
 
     io.emit("players", players);
-    io.emit("message", players.length + "/5 Players Joined");
 
-    if (players.length === 5) {
+    if (players.length < 5) {
+      io.emit("message", players.length + "/5 Players Joined");
+    }
+
+    // ONLY START HERE
+    if (players.length === 5 && !gameStarted) {
       gameStarted = true;
-      setTimeout(startRound, 2000);
+      io.emit("message", "5 Players Joined! Starting...");
+      setTimeout(startRound, 3000);
     }
 
   });
 
-  socket.on("tap", () => {
+  socket.on("tap", ()=> {
     if (!gameStarted) return;
+    if (!roundActive) return;
     scores[socket.id] = (scores[socket.id] || 0) + 1;
   });
 
-  socket.on("disconnect", () => {
+  socket.on("disconnect", ()=> {
     players = players.filter(p => p.id !== socket.id);
     io.emit("players", players);
 
@@ -272,8 +231,6 @@ io.on("connection", socket => {
 
 });
 
-// -------------------- START --------------------
-
-server.listen(PORT, () => {
-  console.log("Server running on port " + PORT);
+server.listen(PORT, ()=> {
+  console.log("Running on port " + PORT);
 });
