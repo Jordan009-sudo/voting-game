@@ -87,7 +87,10 @@ function endRound() {
   if (dead) dead.out = true;
 
   io.emit("scoreboard", list);
-  io.emit("roundEnd", loser.name);
+ io.emit("roundEnd", {
+  name: loser.name,
+  points: loser.points
+});
 
   if (alive().length === 1) {
     io.emit("winner", alive()[0].name);
@@ -323,9 +326,9 @@ socket.on("scoreboard",(list)=>{
  scoreboard.innerText=txt;
 });
 
-socket.on("roundEnd",(name)=>{
- hideAll();
- status.innerText="❌ "+name+" Eliminated";
+socket.on("roundEnd",(data)=>{
+ status.innerText =
+ "❌ " + data.name + " eliminated with " + data.points + " pts";
 });
 
 socket.on("winner",(name)=>{
@@ -373,24 +376,37 @@ socket.on("join", name => {
 
 });
 
-socket.on("score",()=>{
- if(!playing) return;
- scores[socket.id]=(scores[socket.id]||0)+1;
+socket.on("score", () => {
+  if (!playing) return;
+
+  const player = players.find(p => p.id === socket.id);
+  if (!player || player.out) return;
+
+  scores[socket.id] = (scores[socket.id] || 0) + 1;
 });
 
-socket.on("minus",()=>{
- if(!playing) return;
- scores[socket.id]=(scores[socket.id]||0)-1;
+socket.on("minus", () => {
+  if (!playing) return;
+
+  const player = players.find(p => p.id === socket.id);
+  if (!player || player.out) return;
+
+  scores[socket.id] = (scores[socket.id] || 0) - 1;
 });
 
-socket.on("door",(n)=>{
- if(!playing) return;
- let win=Math.floor(Math.random()*3)+1;
- if(n===win){
-   scores[socket.id]=(scores[socket.id]||0)+5;
- }else{
-   scores[socket.id]=(scores[socket.id]||0)-2;
- }
+socket.on("door", (n) => {
+  if (!playing) return;
+
+  const player = players.find(p => p.id === socket.id);
+  if (!player || player.out) return;
+
+  let win = Math.floor(Math.random() * 3) + 1;
+
+  if (n === win) {
+    scores[socket.id] = (scores[socket.id] || 0) + 5;
+  } else {
+    scores[socket.id] = (scores[socket.id] || 0) - 2;
+  }
 });
 
 socket.on("disconnect",()=>{
