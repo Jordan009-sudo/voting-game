@@ -265,7 +265,7 @@ const socket = io({
 let answer = 0;
 
 function join(){
- let username = name.value.trim();
+ let username = document.getElementById("name").value.trim();
  socket.emit("join", username);
 }
 
@@ -320,19 +320,19 @@ socket.on("players", list=>{
  list.forEach(p=>{
    txt += p.name + (p.out ? " ❌ OUT" : " ✅ IN") + "\\n";
  });
- players.innerText = txt;
+ document.getElementById("players").innerText = txt;
 });
 
 socket.on("message", msg=>{
- status.innerText = msg;
+ document.getElementById("status").innerText = msg;
 });
 
 socket.on("tick", t=>{
- timer.innerText = "⏱ " + t;
+ document.getElementById("timer").innerText = "⏱ " + t;
 });
 
 socket.on("joined", ()=>{
- joinBox.style.display="none";
+ document.getElementById("joinBox").style.display="none";
 });
 
 socket.on("roundStart", data=>{
