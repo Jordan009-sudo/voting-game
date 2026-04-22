@@ -1,6 +1,7 @@
 const express = require("express");
 const http = require("http");
 const { Server } = require("socket.io");
+const { MongoClient } = require("mongodb");
 
 const app = express();
 const server = http.createServer(app);
@@ -11,6 +12,69 @@ const io = new Server(server, {
 });
 
 const PORT = process.env.PORT || 3000;
+const MONGO_URI = process.env.MONGO_URI;
+
+let db;
+let users;
+
+async function connectDB() {
+  try {
+    const client = new MongoClient(MONGO_URI);
+    await client.connect();
+
+    db = client.db("neonbattle");
+    users = db.collection("users");
+
+    console.log("MongoDB Connected ✅");
+  } catch (err) {
+    console.log(err);
+  }
+}
+
+connectDB();
+
+async function getOrCreateUser(username) {
+  let user = await users.findOne({ username });
+
+  if (!user) {
+    user = {
+      username,
+      coins: 0,
+      wins: 0,
+      games: 0
+    };
+
+    await users.insertOne(user);
+  }
+
+  return user;
+}
+
+async function addCoins(username, amount) {
+  await users.updateOne(
+    { username },
+    { $inc: { coins: amount } }
+  );
+}
+
+async function addWin(username) {
+  await users.updateOne(
+    { username },
+    {
+      $inc: {
+        wins: 1,
+        coins: 50
+      }
+    }
+  );
+}
+
+async function addGame(username) {
+  await users.updateOne(
+    { username },
+    { $inc: { games: 1 } }
+  );
+}
 
 // =======================
 // GAME STATE
