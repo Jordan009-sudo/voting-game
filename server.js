@@ -14,6 +14,10 @@ const io = new Server(server, {
 const PORT = process.env.PORT || 3000;
 const MONGO_URI = process.env.MONGO_URI;
 
+// =======================
+// DATABASE
+// =======================
+
 let db;
 let users;
 
@@ -25,13 +29,68 @@ async function connectDB() {
     db = client.db("neonbattle");
     users = db.collection("users");
 
-    console.log("MongoDB Connected ✅");
+    console.log("MongoDB Connected");
   } catch (err) {
-    console.log(err);
+    console.log("Mongo Error:", err);
   }
 }
 
 connectDB();
+
+// =======================
+// GAME STATE
+// =======================
+
+let players = [];
+let started = false;
+let playing = false;
+let round = 1;
+let timer = 10;
+let currentGame = "";
+let scores = {};
+let loop = null;
+
+const games = ["tap", "math", "door", "spam"];
+
+// =======================
+// HELPERS
+// =======================
+
+function alivePlayers() {
+  return players.filter(p => !p.out);
+}
+
+function getPlayer(id) {
+  return players.find(p => p.id === id);
+}
+
+function canPlay(id) {
+  const p = getPlayer(id);
+  return p && !p.out && playing;
+}
+
+function sendPlayers() {
+  io.emit("players", players);
+}
+
+function resetGame() {
+  players = [];
+  started = false;
+  playing = false;
+  round = 1;
+  timer = 10;
+  currentGame = "";
+  scores = {};
+  if (loop) clearInterval(loop);
+}
+
+function randomGame() {
+  currentGame = games[Math.floor(Math.random() * games.length)];
+}
+
+// =======================
+// DATABASE HELPERS
+// =======================
 
 async function getOrCreateUser(username) {
   let user = await users.findOne({ username });
@@ -39,8 +98,8 @@ async function getOrCreateUser(username) {
   if (!user) {
     user = {
       username,
-      coins: 0,
       wins: 0,
+      coins: 0,
       games: 0
     };
 
@@ -77,57 +136,6 @@ async function addGame(username) {
 }
 
 // =======================
-// GAME STATE
-// =======================
-
-let players = [];
-let started = false;
-let playing = false;
-let round = 1;
-let timer = 10;
-let currentGame = "";
-let scores = {};
-let gameLoop = null;
-
-const games = ["tap", "math", "door", "spam"];
-
-// =======================
-// HELPERS
-// =======================
-
-function alivePlayers() {
-  return players.filter(p => !p.out);
-}
-
-function getPlayer(id) {
-  return players.find(p => p.id === id);
-}
-
-function canPlay(id) {
-  const p = getPlayer(id);
-  return p && !p.out && playing;
-}
-
-function sendPlayers() {
-  io.emit("players", players);
-}
-
-function resetGame() {
-  players = [];
-  started = false;
-  playing = false;
-  round = 1;
-  timer = 10;
-  currentGame = "";
-  scores = {};
-  if (gameLoop) clearInterval(gameLoop);
-}
-
-function randomGame() {
-  currentGame = games[Math.floor(Math.random() * games.length)];
-}
-
-// =======================
 // GAME FLOW
 // =======================
 
@@ -145,22 +153,21 @@ function startRound() {
 
   io.emit("roundStart", {
     round,
-    game: currentGame,
-    timer
+    game: currentGame
   });
 
-  gameLoop = setInterval(() => {
+  loop = setInterval(() => {
     timer--;
     io.emit("tick", timer);
 
     if (timer <= 0) {
-      clearInterval(gameLoop);
+      clearInterval(loop);
       endRound();
     }
   }, 1000);
 }
 
-function endRound() {
+async function endRound() {
   playing = false;
 
   const board = alivePlayers()
@@ -177,6 +184,7 @@ function endRound() {
   if (target) target.out = true;
 
   sendPlayers();
+
   io.emit("scoreboard", board);
 
   io.emit("roundEnd", {
@@ -184,8 +192,18 @@ function endRound() {
     points: loser.points
   });
 
+  // everyone gets coins
+  for (const p of board) {
+    await addCoins(p.name, 10);
+  }
+
   if (alivePlayers().length === 1) {
-    io.emit("winner", alivePlayers()[0].name);
+    const winner = alivePlayers()[0];
+
+    await addWin(winner.name);
+
+    io.emit("winner", winner.name);
+
     started = false;
     return;
   }
@@ -203,8 +221,8 @@ res.send(`
 <!DOCTYPE html>
 <html>
 <head>
-<meta name="viewport" content="width=device-width, initial-scale=1">
-<title>Neon Battle v4</title>
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Neon Battle V5</title>
 
 <style>
 body{
@@ -219,44 +237,39 @@ text-align:center;
 .panel{
 max-width:700px;
 margin:auto;
-padding:25px;
 background:#111;
+padding:25px;
 border-radius:20px;
-box-shadow:0 0 30px #00ffe1;
+box-shadow:0 0 25px #00ffe1;
 }
 
 input,button{
 padding:14px;
 margin:6px;
-font-size:16px;
 border:none;
 border-radius:10px;
+font-size:16px;
 }
 
 input{
+width:220px;
 background:#222;
 color:white;
-width:220px;
 }
 
 button{
 background:#00ffe1;
-color:black;
 font-weight:bold;
 cursor:pointer;
 }
 
-button:hover{
-transform:scale(1.05);
+.big{
+font-size:28px;
+padding:22px 40px;
 }
 
 .hidden{
 display:none;
-}
-
-.big{
-font-size:28px;
-padding:25px 45px;
 }
 
 .red{background:#ff0055;color:white;}
@@ -265,10 +278,10 @@ padding:25px 45px;
 #players,#scoreboard{
 margin-top:15px;
 padding:15px;
-background:#0a0a0a;
+background:#000;
 border-radius:12px;
-text-align:left;
 white-space:pre-line;
+text-align:left;
 }
 
 #spamBox{
@@ -277,29 +290,23 @@ grid-template-columns:repeat(4,1fr);
 gap:8px;
 margin-top:10px;
 }
-
-.door{
-width:90px;
-height:120px;
-font-size:28px;
-}
 </style>
 </head>
 <body>
 
 <div class="panel">
 
-<h1>⚡ Neon Battle v4 ⚡</h1>
+<h1>⚡ Neon Battle V5 ⚡</h1>
 
 <div id="joinBox">
-<input id="name" placeholder="Your Name">
+<input id="username" placeholder="Your Name">
 <button onclick="join()">JOIN</button>
 </div>
 
 <h2 id="status">Waiting for 5 players...</h2>
 <h3 id="timer"></h3>
 
-<button id="mainBtn" class="big hidden" onclick="socket.emit('score')">GO</button>
+<button id="mainBtn" class="big hidden" onclick="socket.emit('score')">TAP!</button>
 
 <div id="mathBox" class="hidden">
 <h2 id="mathQ"></h2>
@@ -308,9 +315,9 @@ font-size:28px;
 </div>
 
 <div id="doorBox" class="hidden">
-<button class="door" onclick="socket.emit('door',1)">🚪1</button>
-<button class="door" onclick="socket.emit('door',2)">🚪2</button>
-<button class="door" onclick="socket.emit('door',3)">🚪3</button>
+<button onclick="socket.emit('door',1)">🚪1</button>
+<button onclick="socket.emit('door',2)">🚪2</button>
+<button onclick="socket.emit('door',3)">🚪3</button>
 </div>
 
 <div id="spamBox" class="hidden"></div>
@@ -321,6 +328,7 @@ font-size:28px;
 </div>
 
 <script src="/socket.io/socket.io.js"></script>
+
 <script>
 const socket = io({
  transports:["websocket","polling"]
@@ -328,34 +336,40 @@ const socket = io({
 
 let answer = 0;
 
-function join(){
- let username = document.getElementById("name").value.trim();
- socket.emit("join", username);
+function el(id){
+ return document.getElementById(id);
 }
 
 function hideGames(){
- mainBtn.classList.add("hidden");
- mathBox.classList.add("hidden");
- doorBox.classList.add("hidden");
- spamBox.classList.add("hidden");
+ el("mainBtn").classList.add("hidden");
+ el("mathBox").classList.add("hidden");
+ el("doorBox").classList.add("hidden");
+ el("spamBox").classList.add("hidden");
+}
+
+function join(){
+ const username = el("username").value.trim();
+ socket.emit("join", username);
 }
 
 function submitMath(){
- if(Number(mathA.value) === answer){
+ if(Number(el("mathA").value) === answer){
    socket.emit("score");
  }
 }
 
 function buildSpam(){
- spamBox.classList.remove("hidden");
+ const box = el("spamBox");
+ box.classList.remove("hidden");
 
  function render(){
-   spamBox.innerHTML="";
+   box.innerHTML = "";
 
-   let target = Math.floor(Math.random()*12);
+   const target = Math.floor(Math.random()*12);
 
    for(let i=0;i<12;i++){
-     let b=document.createElement("button");
+
+     const b = document.createElement("button");
 
      if(i===target){
        b.innerText="TARGET";
@@ -372,61 +386,62 @@ function buildSpam(){
        };
      }
 
-     spamBox.appendChild(b);
+     box.appendChild(b);
    }
  }
 
  render();
 }
 
-socket.on("players", list=>{
- let txt="👥 PLAYERS\\n\\n";
- list.forEach(p=>{
-   txt += p.name + (p.out ? " ❌ OUT" : " ✅ IN") + "\\n";
- });
- document.getElementById("players").innerText = txt;
+socket.on("joined", ()=>{
+ el("joinBox").style.display="none";
 });
 
 socket.on("message", msg=>{
- document.getElementById("status").innerText = msg;
+ el("status").innerText = msg;
 });
 
 socket.on("tick", t=>{
- document.getElementById("timer").innerText = "⏱ " + t;
+ el("timer").innerText = "⏱ " + t;
 });
 
-socket.on("joined", ()=>{
- document.getElementById("joinBox").style.display="none";
+socket.on("players", list=>{
+ let txt="👥 PLAYERS\\n\\n";
+
+ list.forEach(p=>{
+   txt += p.name + (p.out ? " ❌ OUT":" ✅ IN") + "\\n";
+ });
+
+ el("players").innerText = txt;
 });
 
 socket.on("roundStart", data=>{
  hideGames();
- scoreboard.innerText="";
+ el("scoreboard").innerText="";
 
  if(data.game==="tap"){
-   status.innerText="⚡ TAP RACE";
-   mainBtn.innerText="TAP!";
-   mainBtn.classList.remove("hidden");
+   el("status").innerText="⚡ TAP RACE";
+   el("mainBtn").classList.remove("hidden");
  }
 
  if(data.game==="math"){
-   status.innerText="🧠 MATH RACE";
-   mathBox.classList.remove("hidden");
+   el("status").innerText="🧠 MATH RACE";
+   el("mathBox").classList.remove("hidden");
 
-   let a=Math.floor(Math.random()*10)+1;
-   let b=Math.floor(Math.random()*10)+1;
+   const a=Math.floor(Math.random()*10)+1;
+   const b=Math.floor(Math.random()*10)+1;
 
-   answer = a+b;
-   mathQ.innerText = a+" + "+b+" = ?";
+   answer=a+b;
+   el("mathQ").innerText=a+" + "+b+" = ?";
  }
 
  if(data.game==="door"){
-   status.innerText="🚪 LUCKY DOOR";
-   doorBox.classList.remove("hidden");
+   el("status").innerText="🚪 LUCKY DOOR";
+   el("doorBox").classList.remove("hidden");
  }
 
  if(data.game==="spam"){
-   status.innerText="🎯 SPAM DODGE";
+   el("status").innerText="🎯 SPAM DODGE";
    buildSpam();
  }
 });
@@ -438,18 +453,19 @@ socket.on("scoreboard", board=>{
    txt += (i+1)+". "+p.name+" - "+p.points+" pts\\n";
  });
 
- scoreboard.innerText = txt;
+ el("scoreboard").innerText = txt;
 });
 
 socket.on("roundEnd", data=>{
  hideGames();
- status.innerText =
+ el("status").innerText =
  "❌ " + data.name + " eliminated with " + data.points + " pts";
 });
 
 socket.on("winner", name=>{
  hideGames();
- status.innerText = "👑 " + name + " WINS THE GAME!";
+ el("status").innerText =
+ "👑 " + name + " WINS +50 COINS!";
 });
 </script>
 
@@ -464,7 +480,7 @@ socket.on("winner", name=>{
 
 io.on("connection", socket => {
 
-socket.on("join", username => {
+socket.on("join", async username => {
 
   if (started) {
     socket.emit("message","Game already started");
@@ -482,10 +498,13 @@ socket.on("join", username => {
     username = "Player" + (players.length + 1);
   }
 
+  await getOrCreateUser(username);
+  await addGame(username);
+
   players.push({
     id: socket.id,
     name: username,
-    out: false
+    out:false
   });
 
   socket.emit("joined");
@@ -518,9 +537,9 @@ socket.on("door", n=>{
   const lucky = Math.floor(Math.random()*3)+1;
 
   if (n === lucky) {
-    scores[socket.id] = (scores[socket.id] || 0) + 5;
+    scores[socket.id] += 5;
   } else {
-    scores[socket.id] = (scores[socket.id] || 0) - 2;
+    scores[socket.id] -= 2;
   }
 });
 
@@ -538,8 +557,6 @@ socket.on("disconnect", ()=>{
 
 });
 
-// =======================
-// START
 // =======================
 
 server.listen(PORT, ()=>{
