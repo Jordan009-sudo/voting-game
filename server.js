@@ -1,255 +1,24 @@
-//
-// Neon Battle V6 Part 2A
-// Drop-in server.js
+// V6 PART 2B FULL
+// Paste as server.js
 // Features:
-// - Daily reward streak system
-// - Win streak bonuses
-// - Better shop
-// - Leaderboards (wins / coins / streak / games)
-// - Keeps 5-player join/start flow
-//
+// 5 Minigames
+// Better UI
+// Live scoreboard
+// Round intros
+// Winner celebration
 
 const express = require("express");
 const http = require("http");
 const { Server } = require("socket.io");
-const { MongoClient } = require("mongodb");
 
 const app = express();
 const server = http.createServer(app);
 const io = new Server(server, {
   cors: { origin: "*" },
-  transports: ["websocket", "polling"]
+  transports: ["websocket","polling"]
 });
 
 const PORT = process.env.PORT || 3000;
-const MONGO_URI = process.env.MONGO_URI;
-
-// ================= DB =================
-let users = null;
-
-async function connectDB() {
-  if (!MONGO_URI) {
-    console.log("No MONGO_URI found");
-    return;
-  }
-
-  try {
-    const client = new MongoClient(MONGO_URI);
-    await client.connect();
-    const db = client.db("neonbattle");
-    users = db.collection("users");
-    console.log("Mongo Connected ✅");
-  } catch (err) {
-    console.log("Mongo Failed:", err.message);
-  }
-}
-connectDB();
-
-// ================= SHOP =================
-const SHOP = {
-  crown: { name: "👑 Crown", price: 250, icon: "👑" },
-  fire: { name: "🔥 Fire", price: 500, icon: "🔥" },
-  diamond: { name: "💎 Diamond", price: 1000, icon: "💎" },
-  vip: { name: "⭐ VIP", price: 2000, icon: "⭐" }
-};
-
-// ================= HELPERS =================
-function css() {
-return `
-<style>
-body{margin:0;background:#050505;color:#fff;font-family:Arial;text-align:center}
-.wrap{max-width:850px;margin:auto;padding:20px}
-.card{background:#111;padding:24px;border-radius:20px;box-shadow:0 0 25px #00ffe1;margin-top:20px}
-input{padding:12px;width:240px;border:none;border-radius:10px;background:#222;color:#fff}
-button,a.btn{padding:12px 18px;margin:5px;border:none;border-radius:10px;background:#00ffe1;color:#000;font-weight:bold;text-decoration:none;display:inline-block;cursor:pointer}
-pre{background:#000;padding:15px;border-radius:12px;text-align:left;white-space:pre-line}
-.shop{background:#000;padding:14px;border-radius:12px;margin:10px}
-small{opacity:.75}
-</style>
-`;
-}
-
-function rankFromWins(w) {
-  if (w >= 50) return "Champion";
-  if (w >= 30) return "Diamond";
-  if (w >= 15) return "Gold";
-  if (w >= 5) return "Silver";
-  return "Bronze";
-}
-
-function rewardForDailyStreak(streak) {
-  if (streak <= 1) return 50;
-  if (streak === 2) return 75;
-  if (streak === 3) return 100;
-  if (streak === 4) return 125;
-  return 150;
-}
-
-function winStreakBonus(streak) {
-  if (streak >= 5) return 100;
-  if (streak >= 3) return 50;
-  if (streak >= 2) return 25;
-  return 0;
-}
-
-async function ensureUser(username) {
-  if (!users) {
-    return {
-      username,
-      wins: 0,
-      coins: 0,
-      games: 0,
-      items: [],
-      equipped: "",
-      lastDaily: 0,
-      dailyStreak: 0,
-      winStreak: 0,
-      bestWinStreak: 0
-    };
-  }
-
-  let user = await users.findOne({ username });
-
-  if (!user) {
-    await users.insertOne({
-      username,
-      wins: 0,
-      coins: 0,
-      games: 0,
-      items: [],
-      equipped: "",
-      lastDaily: 0,
-      dailyStreak: 0,
-      winStreak: 0,
-      bestWinStreak: 0
-    });
-
-    user = await users.findOne({ username });
-  }
-
-  return user;
-}
-
-async function getUser(username) {
-  if (!users) return null;
-  return await users.findOne({ username });
-}
-
-function displayName(user) {
-  if (!user) return "Player";
-  if (user.equipped && SHOP[user.equipped]) {
-    return SHOP[user.equipped].icon + " " + user.username;
-  }
-  return user.username;
-}
-
-async function addGame(username) {
-  if (!users) return;
-  await users.updateOne(
-    { username },
-    { $inc: { games: 1 } }
-  );
-}
-
-async function addLoss(username) {
-  if (!users) return;
-  await users.updateOne(
-    { username },
-    { $set: { winStreak: 0 } }
-  );
-}
-
-async function addWin(username) {
-  if (!users) return;
-
-  const user = await ensureUser(username);
-  const newStreak = (user.winStreak || 0) + 1;
-  const bonus = winStreakBonus(newStreak);
-
-  await users.updateOne(
-    { username },
-    {
-      $inc: {
-        wins: 1,
-        coins: 50 + bonus
-      },
-      $set: {
-        winStreak: newStreak,
-        bestWinStreak: Math.max(newStreak, user.bestWinStreak || 0)
-      }
-    }
-  );
-
-  return bonus;
-}
-
-async function claimDaily(username) {
-  if (!users) return { ok: false, msg: "DB offline" };
-
-  const user = await ensureUser(username);
-  const now = Date.now();
-  const last = user.lastDaily || 0;
-  const diff = now - last;
-
-  if (diff < 86400000) {
-    return { ok: false, msg: "Already claimed today" };
-  }
-
-  let streak = 1;
-
-  // within 48h keeps streak alive
-  if (diff < 172800000 && last > 0) {
-    streak = (user.dailyStreak || 0) + 1;
-  }
-
-  const reward = rewardForDailyStreak(streak);
-
-  await users.updateOne(
-    { username },
-    {
-      $inc: { coins: reward },
-      $set: {
-        lastDaily: now,
-        dailyStreak: streak
-      }
-    }
-  );
-
-  return { ok: true, reward, streak };
-}
-
-async function buyItem(username, item) {
-  if (!users || !SHOP[item]) return false;
-
-  const user = await ensureUser(username);
-
-  if ((user.items || []).includes(item)) return false;
-  if (user.coins < SHOP[item].price) return false;
-
-  await users.updateOne(
-    { username },
-    {
-      $inc: { coins: -SHOP[item].price },
-      $push: { items: item }
-    }
-  );
-
-  return true;
-}
-
-async function equipItem(username, item) {
-  if (!users || !SHOP[item]) return false;
-
-  const user = await ensureUser(username);
-  if (!(user.items || []).includes(item)) return false;
-
-  await users.updateOne(
-    { username },
-    { $set: { equipped: item } }
-  );
-
-  return true;
-}
 
 // ================= GAME =================
 let players = [];
@@ -259,122 +28,217 @@ let timer = 10;
 let scores = {};
 let loop = null;
 
-function alive() {
-  return players.filter(p => !p.out);
+const games = ["tap","spam","target","door","freeze"];
+let currentGame = "tap";
+let targetX = 50;
+let targetY = 50;
+let green = true;
+
+function alive(){
+  return players.filter(p=>!p.out);
 }
 
-function getPlayer(id) {
-  return players.find(p => p.id === id);
+function getPlayer(id){
+  return players.find(p=>p.id===id);
 }
 
-function sendPlayers() {
+function sendPlayers(){
   io.emit("players", players);
 }
 
-function resetLobby() {
+function resetLobby(){
   players = [];
   started = false;
   playing = false;
-  timer = 10;
   scores = {};
-  if (loop) clearInterval(loop);
+  timer = 10;
+  if(loop) clearInterval(loop);
 }
 
-function startRound() {
-  if (alive().length <= 1) return;
+function pickGame(){
+  currentGame = games[Math.floor(Math.random()*games.length)];
+}
 
-  playing = true;
-  timer = 10;
+function startRound(){
+  if(alive().length <= 1) return;
+
+  pickGame();
+
   scores = {};
+  alive().forEach(p => scores[p.id]=0);
 
-  alive().forEach(p => {
-    scores[p.id] = 0;
+  timer = 10;
+  playing = false;
+
+  io.emit("intro", currentGame);
+
+  let count = 3;
+
+  const intro = setInterval(()=>{
+    io.emit("countdown", count);
+    count--;
+
+    if(count < 0){
+      clearInterval(intro);
+      beginGame();
+    }
+  },1000);
+}
+
+function beginGame(){
+  playing = true;
+  io.emit("roundStart", {
+    game: currentGame,
+    x: targetX,
+    y: targetY
   });
 
-  io.emit("roundStart");
+  if(currentGame === "freeze"){
+    green = true;
+  }
 
-  loop = setInterval(() => {
+  loop = setInterval(()=>{
     timer--;
-    io.emit("tick", timer);
 
-    if (timer <= 0) {
+    if(currentGame === "freeze"){
+      green = !green;
+      io.emit("freezeState", green);
+    }
+
+    io.emit("tick", timer);
+    io.emit("liveScores", scoreBoard());
+
+    if(timer <= 0){
       clearInterval(loop);
       endRound();
     }
-  }, 1000);
+  },1000);
 }
 
-async function endRound() {
+function scoreBoard(){
+  return alive().map(p => ({
+    name:p.name,
+    score:scores[p.id] || 0
+  })).sort((a,b)=>b.score-a.score);
+}
+
+function endRound(){
   playing = false;
 
   const board = alive()
-    .map(p => ({
-      id: p.id,
-      username: p.username,
-      name: p.name,
-      score: scores[p.id] || 0
+    .map(p=>({
+      id:p.id,
+      name:p.name,
+      score:scores[p.id] || 0
     }))
-    .sort((a, b) => a.score - b.score);
+    .sort((a,b)=>a.score-b.score);
 
   const loser = getPlayer(board[0].id);
-  if (loser) loser.out = true;
-
-  await addLoss(board[0].username);
+  loser.out = true;
 
   sendPlayers();
   io.emit("scoreboard", board);
-  io.emit("message", "❌ " + board[0].name + " eliminated");
+  io.emit("eliminated", loser.name);
 
-  if (alive().length === 1) {
-    const winner = alive()[0];
-    const bonus = await addWin(winner.username);
-
-    io.emit(
-      "message",
-      "👑 " + winner.name + " wins! +50 coins" +
-      (bonus ? " +" + bonus + " streak bonus" : "")
-    );
-
+  if(alive().length === 1){
+    io.emit("winner", alive()[0].name);
     started = false;
     return;
   }
 
-  setTimeout(startRound, 4000);
+  setTimeout(startRound, 5000);
 }
 
-// ================= HOME =================
-app.get("/", (req, res) => {
+// ================= PAGE =================
+app.get("/", (req,res)=>{
 res.send(`
 <html>
 <head>
-<title>Neon Battle V6.2A</title>
-${css()}
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Neon Battle V6</title>
+<style>
+body{
+margin:0;
+background:#050505;
+font-family:Arial;
+color:white;
+text-align:center;
+}
+.wrap{
+max-width:900px;
+margin:auto;
+padding:20px;
+}
+.card{
+background:#111;
+padding:25px;
+border-radius:20px;
+box-shadow:0 0 25px #00ffe1;
+margin-top:20px;
+}
+input{
+padding:12px;
+width:220px;
+border:none;
+border-radius:10px;
+background:#222;
+color:#fff;
+}
+button{
+padding:14px 20px;
+margin:5px;
+border:none;
+border-radius:10px;
+background:#00ffe1;
+font-weight:bold;
+cursor:pointer;
+}
+#tapBtn{
+font-size:30px;
+display:none;
+}
+#target{
+width:70px;
+height:70px;
+border-radius:50%;
+background:red;
+position:absolute;
+display:none;
+cursor:pointer;
+}
+pre{
+background:#000;
+padding:15px;
+border-radius:12px;
+text-align:left;
+white-space:pre-line;
+}
+.big{
+font-size:34px;
+font-weight:bold;
+margin:15px;
+}
+</style>
 </head>
 <body>
+
 <div class="wrap">
 <div class="card">
 
 <h1>⚡ Neon Battle ⚡</h1>
 
-<input id="user" placeholder="Username">
+<input id="name" placeholder="Username">
 <button onclick="join()">JOIN</button>
 
-<br><br>
+<div id="status" class="big">Waiting for 5 players...</div>
+<div id="timer"></div>
 
-<button onclick="go('/profile')">👤 Profile</button>
-<button onclick="go('/shop')">🛒 Shop</button>
-<button onclick="go('/daily')">🎁 Daily</button>
-<button onclick="go('/leaderboard')">🏆 Leaderboards</button>
+<button id="tapBtn" onclick="score()">TAP!</button>
 
-<h2 id="status">Waiting for 5 players...</h2>
-<h3 id="timer"></h3>
-
-<button id="tap" style="display:none;font-size:28px;padding:20px" onclick="socket.emit('score')">TAP!</button>
+<div id="target" onclick="hitTarget()"></div>
 
 <pre id="players"></pre>
 <pre id="scores"></pre>
-
-<small>Win = 50 coins + streak bonuses</small>
 
 </div>
 </div>
@@ -383,53 +247,111 @@ ${css()}
 <script>
 const socket = io();
 
-function el(x){ return document.getElementById(x); }
-
-function username(){
- return el("user").value.trim() || "Guest";
-}
+function el(x){return document.getElementById(x)}
 
 function join(){
- socket.emit("join", username());
+ socket.emit("join", el("name").value.trim());
 }
 
-function go(path){
- location.href = path + "?user=" + encodeURIComponent(username());
+function score(){
+ socket.emit("score");
+}
+
+function hitTarget(){
+ socket.emit("target");
 }
 
 socket.on("joined", ()=>{
- el("user").style.display="none";
-});
-
-socket.on("message", m=>{
- el("status").innerText = m;
+ el("name").style.display="none";
 });
 
 socket.on("players", list=>{
- let txt = "PLAYERS\\n\\n";
+ let t="PLAYERS\\n\\n";
  list.forEach(p=>{
-   txt += p.name + (p.out ? " ❌ OUT" : " ✅ IN") + "\\n";
+   t += p.name + (p.out?" ❌ OUT":" ✅ IN") + "\\n";
  });
- el("players").innerText = txt;
+ el("players").innerText=t;
+});
+
+socket.on("message", m=>{
+ el("status").innerText=m;
+});
+
+socket.on("intro", game=>{
+ let names = {
+ tap:"⚡ TAP RACE",
+ spam:"🔥 SPAM DODGE",
+ target:"🎯 MOVING TARGET",
+ door:"🚪 LUCKY DOOR",
+ freeze:"🚦 RED LIGHT GREEN LIGHT"
+ };
+ el("status").innerText="NEXT GAME: " + names[game];
+});
+
+socket.on("countdown", n=>{
+ el("timer").innerText="Starting in " + n;
+});
+
+socket.on("roundStart", data=>{
+ el("scores").innerText="";
+ el("tapBtn").style.display="none";
+ el("target").style.display="none";
+
+ if(data.game==="tap"){
+   el("tapBtn").innerText="TAP!";
+   el("tapBtn").style.display="inline-block";
+ }
+
+ if(data.game==="spam"){
+   el("tapBtn").innerText="SPAM!";
+   el("tapBtn").style.display="inline-block";
+ }
+
+ if(data.game==="door"){
+   el("status").innerHTML='🚪 Pick Door<br><button onclick="socket.emit(\\'door\\',1)">1</button><button onclick="socket.emit(\\'door\\',2)">2</button><button onclick="socket.emit(\\'door\\',3)">3</button>';
+ }
+
+ if(data.game==="target"){
+   let t = el("target");
+   t.style.display="block";
+   t.style.left=data.x+"%";
+   t.style.top=data.y+"%";
+ }
+
+ if(data.game==="freeze"){
+   el("tapBtn").innerText="RUN!";
+   el("tapBtn").style.display="inline-block";
+ }
+});
+
+socket.on("freezeState", green=>{
+ el("status").innerText = green ? "🟢 GREEN LIGHT" : "🔴 RED LIGHT";
+});
+
+socket.on("targetMove", pos=>{
+ let t = el("target");
+ t.style.left=pos.x+"%";
+ t.style.top=pos.y+"%";
 });
 
 socket.on("tick", t=>{
- el("timer").innerText = "⏱ " + t;
+ el("timer").innerText="⏱ "+t;
 });
 
-socket.on("roundStart", ()=>{
- el("status").innerText = "⚡ TAP RACE";
- el("tap").style.display = "inline-block";
- el("scores").innerText = "";
-});
-
-socket.on("scoreboard", board=>{
- let txt = "ROUND SCORES\\n\\n";
+socket.on("liveScores", board=>{
+ let txt="LIVE SCORES\\n\\n";
  board.forEach((p,i)=>{
    txt += (i+1)+". "+p.name+" - "+p.score+"\\n";
  });
- el("scores").innerText = txt;
- el("tap").style.display = "none";
+ el("scores").innerText=txt;
+});
+
+socket.on("eliminated", name=>{
+ el("status").innerText="❌ "+name+" eliminated!";
+});
+
+socket.on("winner", name=>{
+ el("status").innerText="👑 WINNER: "+name;
 });
 </script>
 
@@ -438,171 +360,28 @@ socket.on("scoreboard", board=>{
 `);
 });
 
-// ================= PROFILE =================
-app.get("/profile", async (req, res) => {
-  const username = req.query.user || "Guest";
-  const user = await ensureUser(username);
-
-  const winRate = user.games
-    ? ((user.wins / user.games) * 100).toFixed(1)
-    : "0";
-
-  res.send(`
-  <html><head>${css()}</head><body>
-  <div class="wrap"><div class="card">
-
-  <h1>${displayName(user)}</h1>
-  <h2>💰 Coins: ${user.coins}</h2>
-  <h2>🏆 Wins: ${user.wins}</h2>
-  <h2>🎮 Games: ${user.games}</h2>
-  <h2>📈 Win Rate: ${winRate}%</h2>
-  <h2>🥇 Rank: ${rankFromWins(user.wins)}</h2>
-  <h2>🔥 Win Streak: ${user.winStreak || 0}</h2>
-  <h2>⭐ Best Streak: ${user.bestWinStreak || 0}</h2>
-  <h2>🎁 Daily Streak: ${user.dailyStreak || 0}</h2>
-
-  <a class="btn" href="/">⬅ Home</a>
-
-  </div></div>
-  </body></html>
-  `);
-});
-
-// ================= SHOP =================
-app.get("/shop", async (req, res) => {
-  const username = req.query.user || "Guest";
-  const user = await ensureUser(username);
-
-  let html = "";
-
-  for (const key in SHOP) {
-    const item = SHOP[key];
-    const owned = (user.items || []).includes(key);
-
-    html += `
-      <div class="shop">
-        <h2>${item.name}</h2>
-        <p>${item.price} coins</p>
-        ${
-          owned
-          ? `<a class="btn" href="/equip?user=${username}&item=${key}">Equip</a>`
-          : `<a class="btn" href="/buy?user=${username}&item=${key}">Buy</a>`
-        }
-      </div>
-    `;
-  }
-
-  res.send(`
-  <html><head>${css()}</head><body>
-  <div class="wrap"><div class="card">
-
-  <h1>🛒 Shop</h1>
-  <h2>💰 ${user.coins} Coins</h2>
-
-  ${html}
-
-  <a class="btn" href="/">⬅ Home</a>
-
-  </div></div>
-  </body></html>
-  `);
-});
-
-app.get("/buy", async (req, res) => {
-  await buyItem(req.query.user, req.query.item);
-  res.redirect("/shop?user=" + req.query.user);
-});
-
-app.get("/equip", async (req, res) => {
-  await equipItem(req.query.user, req.query.item);
-  res.redirect("/shop?user=" + req.query.user);
-});
-
-// ================= DAILY =================
-app.get("/daily", async (req, res) => {
-  const username = req.query.user || "Guest";
-  const result = await claimDaily(username);
-
-  let msg = result.msg;
-  if (result.ok) {
-    msg = "🎁 +" + result.reward + " Coins<br>Daily Streak: " + result.streak;
-  }
-
-  res.send(`
-  <html><head>${css()}</head><body>
-  <div class="wrap"><div class="card">
-
-  <h1>${msg}</h1>
-
-  <a class="btn" href="/">⬅ Home</a>
-
-  </div></div>
-  </body></html>
-  `);
-});
-
-// ================= LEADERBOARDS =================
-app.get("/leaderboard", async (req, res) => {
-  if (!users) {
-    return res.send("DB offline");
-  }
-
-  const wins = await users.find().sort({ wins: -1 }).limit(5).toArray();
-  const coins = await users.find().sort({ coins: -1 }).limit(5).toArray();
-  const streak = await users.find().sort({ bestWinStreak: -1 }).limit(5).toArray();
-  const games = await users.find().sort({ games: -1 }).limit(5).toArray();
-
-  function block(title, arr, field) {
-    let h = `<h2>${title}</h2>`;
-    arr.forEach((u,i)=>{
-      h += `<p>${i+1}. ${u.username} - ${u[field] || 0}</p>`;
-    });
-    return h;
-  }
-
-  res.send(`
-  <html><head>${css()}</head><body>
-  <div class="wrap"><div class="card">
-
-  <h1>🏆 Leaderboards</h1>
-
-  ${block("Most Wins", wins, "wins")}
-  ${block("Most Coins", coins, "coins")}
-  ${block("Best Win Streak", streak, "bestWinStreak")}
-  ${block("Most Games", games, "games")}
-
-  <a class="btn" href="/">⬅ Home</a>
-
-  </div></div>
-  </body></html>
-  `);
-});
-
 // ================= SOCKETS =================
-io.on("connection", socket => {
+io.on("connection", socket=>{
 
-socket.on("join", async username => {
-  if (started) {
-    socket.emit("message", "Game already started");
+socket.on("join", name=>{
+
+  if(started){
+    socket.emit("message","Game already started");
     return;
   }
 
-  if (players.length >= 5) {
-    socket.emit("message", "Lobby Full");
+  if(players.length >= 5){
+    socket.emit("message","Lobby Full");
     return;
   }
 
-  username = String(username || "").trim();
-  if (!username) username = "Player" + (players.length + 1);
-
-  const user = await ensureUser(username);
-  await addGame(username);
+  name = String(name || "").trim();
+  if(!name) name = "Player"+(players.length+1);
 
   players.push({
-    id: socket.id,
-    username,
-    name: displayName(user),
-    out: false
+    id:socket.id,
+    name,
+    out:false
   });
 
   socket.emit("joined");
@@ -610,30 +389,76 @@ socket.on("join", async username => {
 
   io.emit("message", players.length + "/5 Joined");
 
-  if (players.length === 5) {
+  if(players.length === 5){
     started = true;
-    io.emit("message", "🔥 Starting...");
-    setTimeout(startRound, 3000);
+    io.emit("message","🔥 Game Starting...");
+    setTimeout(startRound,3000);
   }
+
 });
 
 socket.on("score", ()=>{
-  const p = getPlayer(socket.id);
-  if (!p || p.out || !playing) return;
 
-  scores[socket.id] = (scores[socket.id] || 0) + 1;
+  const p = getPlayer(socket.id);
+  if(!p || p.out || !playing) return;
+
+  if(currentGame==="tap"){
+    scores[socket.id]++;
+  }
+
+  if(currentGame==="spam"){
+    scores[socket.id]++;
+    if(scores[socket.id] > 30) scores[socket.id]-=2;
+  }
+
+  if(currentGame==="freeze"){
+    if(green) scores[socket.id]++;
+    else scores[socket.id]-=2;
+  }
+
+});
+
+socket.on("target", ()=>{
+
+  const p = getPlayer(socket.id);
+  if(!p || p.out || !playing || currentGame!=="target") return;
+
+  scores[socket.id]+=3;
+
+  targetX = Math.floor(Math.random()*80)+5;
+  targetY = Math.floor(Math.random()*70)+10;
+
+  io.emit("targetMove", {x:targetX,y:targetY});
+});
+
+socket.on("door", num=>{
+
+  const p = getPlayer(socket.id);
+  if(!p || p.out || !playing || currentGame!=="door") return;
+
+  let reward = Math.floor(Math.random()*4);
+
+  if(reward===0) scores[socket.id]+=0;
+  if(reward===1) scores[socket.id]+=2;
+  if(reward===2) scores[socket.id]+=4;
+  if(reward===3) scores[socket.id]-=2;
+
 });
 
 socket.on("disconnect", ()=>{
-  players = players.filter(p => p.id !== socket.id);
+
+  players = players.filter(p=>p.id!==socket.id);
   sendPlayers();
 
-  if (players.length === 0) resetLobby();
+  if(players.length===0){
+    resetLobby();
+  }
+
 });
 
 });
 
 // ================= START =================
 server.listen(PORT, ()=>{
-  console.log("Running on " + PORT);
+ console.log("Running on "+PORT);
 });
