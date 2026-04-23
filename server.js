@@ -13,26 +13,22 @@ const io = new Server(server, {
 const PORT = process.env.PORT || 3000;
 const MONGO_URI = process.env.MONGO_URI;
 
-// ================= DATABASE =================
+// ===================== DATABASE =====================
 let users = null;
-
-const SHOP = {
-  fire: { name: "🔥 Fire Name", price: 250, icon: "🔥" },
-  crown: { name: "👑 Crown Trail", price: 500, icon: "👑" },
-  diamond: { name: "💎 Diamond Glow", price: 800, icon: "💎" }
-};
 
 async function connectDB() {
   if (!MONGO_URI) {
-    console.log("No MONGO_URI set. Running without DB.");
+    console.log("No MONGO_URI found.");
     return;
   }
 
   try {
     const client = new MongoClient(MONGO_URI);
     await client.connect();
+
     const db = client.db("neonbattle");
     users = db.collection("users");
+
     console.log("Mongo Connected ✅");
   } catch (err) {
     console.log("Mongo Failed:", err.message);
@@ -40,35 +36,39 @@ async function connectDB() {
 }
 connectDB();
 
-async function safeCreateUser(username) {
-  if (!users) return;
+async function ensureUser(username) {
+  if (!users) return {
+    username,
+    wins: 0,
+    coins: 0,
+    games: 0
+  };
 
-  const found = await users.findOne({ username });
+  let user = await users.findOne({ username });
 
-  if (!found) {
+  if (!user) {
     await users.insertOne({
       username,
       wins: 0,
       coins: 0,
-      games: 0,
-      items: [],
-      equipped: "",
-      lastDaily: 0
+      games: 0
     });
+
+    user = await users.findOne({ username });
   }
+
+  return user;
 }
 
-async function getUser(username) {
-  if (!users) return null;
-  return await users.findOne({ username });
-}
-
-async function safeAddGame(username) {
+async function addGame(username) {
   if (!users) return;
-  await users.updateOne({ username }, { $inc: { games: 1 } });
+  await users.updateOne(
+    { username },
+    { $inc: { games: 1 } }
+  );
 }
 
-async function safeAddWin(username) {
+async function addWin(username) {
   if (!users) return;
   await users.updateOne(
     { username },
@@ -76,65 +76,7 @@ async function safeAddWin(username) {
   );
 }
 
-async function buyItem(username, key) {
-  if (!users || !SHOP[key]) return false;
-
-  const user = await getUser(username);
-  if (!user) return false;
-
-  if (user.coins < SHOP[key].price) return false;
-  if ((user.items || []).includes(key)) return false;
-
-  await users.updateOne(
-    { username },
-    {
-      $inc: { coins: -SHOP[key].price },
-      $push: { items: key }
-    }
-  );
-
-  return true;
-}
-
-async function equipItem(username, key) {
-  if (!users) return false;
-
-  const user = await getUser(username);
-  if (!user) return false;
-
-  if (!(user.items || []).includes(key)) return false;
-
-  await users.updateOne(
-    { username },
-    { $set: { equipped: key } }
-  );
-
-  return true;
-}
-
-async function claimDaily(username) {
-  if (!users) return false;
-
-  const user = await getUser(username);
-  if (!user) return false;
-
-  const now = Date.now();
-  const diff = now - (user.lastDaily || 0);
-
-  if (diff < 86400000) return false;
-
-  await users.updateOne(
-    { username },
-    {
-      $inc: { coins: 100 },
-      $set: { lastDaily: now }
-    }
-  );
-
-  return true;
-}
-
-function getRank(wins) {
+function rankFromWins(wins) {
   if (wins >= 50) return "Champion";
   if (wins >= 30) return "Diamond";
   if (wins >= 15) return "Gold";
@@ -142,15 +84,15 @@ function getRank(wins) {
   return "Bronze";
 }
 
-// ================= GAME =================
+// ===================== GAME =====================
 let players = [];
 let started = false;
 let playing = false;
-let scores = {};
 let timer = 10;
+let scores = {};
 let loop = null;
 
-function alive() {
+function alivePlayers() {
   return players.filter(p => !p.out);
 }
 
@@ -158,32 +100,29 @@ function getPlayer(id) {
   return players.find(p => p.id === id);
 }
 
-function canPlay(id) {
-  const p = getPlayer(id);
-  return p && !p.out && playing;
+function resetLobby() {
+  players = [];
+  started = false;
+  playing = false;
+  timer = 10;
+  scores = {};
+  if (loop) clearInterval(loop);
 }
 
 function sendPlayers() {
   io.emit("players", players);
 }
 
-function resetGame() {
-  players = [];
-  started = false;
-  playing = false;
-  scores = {};
-  timer = 10;
-  if (loop) clearInterval(loop);
-}
-
 function startRound() {
-  if (alive().length <= 1) return;
+  if (alivePlayers().length <= 1) return;
 
   playing = true;
   timer = 10;
   scores = {};
 
-  alive().forEach(p => scores[p.id] = 0);
+  alivePlayers().forEach(p => {
+    scores[p.id] = 0;
+  });
 
   io.emit("roundStart");
 
@@ -201,29 +140,26 @@ function startRound() {
 async function endRound() {
   playing = false;
 
-  const board = alive()
+  const board = alivePlayers()
     .map(p => ({
       id: p.id,
-      name: p.display,
-      points: scores[p.id] || 0
+      name: p.name,
+      score: scores[p.id] || 0
     }))
-    .sort((a, b) => a.points - b.points);
+    .sort((a, b) => a.score - b.score);
 
   const loser = getPlayer(board[0].id);
   if (loser) loser.out = true;
 
   sendPlayers();
-
   io.emit("scoreboard", board);
-  io.emit("roundEnd", loser.display);
+  io.emit("message", "❌ " + loser.name + " eliminated");
 
-  if (alive().length === 1) {
-    const winner = alive()[0];
+  if (alivePlayers().length === 1) {
+    const winner = alivePlayers()[0];
+    await addWin(winner.name);
 
-    await safeAddWin(winner.name);
-
-    io.emit("winner", winner.display);
-
+    io.emit("message", "👑 " + winner.name + " wins!");
     started = false;
     return;
   }
@@ -231,89 +167,156 @@ async function endRound() {
   setTimeout(startRound, 4000);
 }
 
-// ================= HOME =================
+// ===================== CSS =====================
+function css() {
+return `
+<style>
+body{
+margin:0;
+padding:0;
+font-family:Arial;
+background:#050505;
+color:white;
+text-align:center;
+}
+.wrap{
+max-width:760px;
+margin:auto;
+padding:25px;
+}
+.card{
+background:#111;
+padding:25px;
+border-radius:18px;
+box-shadow:0 0 25px #00ffe1;
+margin-top:20px;
+}
+input{
+padding:14px;
+width:240px;
+border:none;
+border-radius:10px;
+background:#222;
+color:#fff;
+font-size:16px;
+}
+button,a.btn{
+padding:12px 18px;
+margin:6px;
+border:none;
+border-radius:10px;
+background:#00ffe1;
+color:#000;
+font-weight:bold;
+cursor:pointer;
+text-decoration:none;
+display:inline-block;
+}
+button:hover,a.btn:hover{
+opacity:.9;
+}
+pre{
+text-align:left;
+background:#000;
+padding:15px;
+border-radius:12px;
+white-space:pre-line;
+overflow:auto;
+}
+.small{
+opacity:.8;
+font-size:14px;
+}
+</style>
+`;
+}
+
+// ===================== HOME =====================
 app.get("/", (req, res) => {
 res.send(`
 <html>
-<body style="background:#050505;color:white;font-family:Arial;text-align:center;padding:20px">
-<h1>⚡ Neon Battle V5 Part 3 ⚡</h1>
+<head>
+<title>Neon Battle V5.1</title>
+${css()}
+</head>
+<body>
+<div class="wrap">
+<div class="card">
+<h1>⚡ Neon Battle ⚡</h1>
 
-<input id="u" placeholder="Username" style="padding:12px">
+<input id="user" placeholder="Enter username">
 <button onclick="join()">JOIN</button>
-<br><br>
 
-<button onclick="go('/profile')">👤 Profile</button>
-<button onclick="go('/shop')">🛒 Shop</button>
-<button onclick="go('/leaderboard')">🏆 Leaderboard</button>
-<button onclick="go('/daily')">🎁 Daily</button>
+<div style="margin-top:15px">
+<button onclick="openPage('/profile')">👤 Profile</button>
+<button onclick="openPage('/leaderboard')">🏆 Leaderboard</button>
+</div>
 
 <h2 id="status">Waiting for 5 players...</h2>
 <h3 id="timer"></h3>
 
-<button id="tap" style="display:none;padding:25px;font-size:30px" onclick="socket.emit('score')">TAP!</button>
+<button id="tapBtn" style="display:none;font-size:28px;padding:20px" onclick="socket.emit('score')">TAP!</button>
 
 <pre id="players"></pre>
 <pre id="scores"></pre>
+
+<p class="small">Winner gets +50 coins</p>
+</div>
+</div>
 
 <script src="/socket.io/socket.io.js"></script>
 <script>
 const socket = io();
 
-function el(x){return document.getElementById(x)}
+function el(x){ return document.getElementById(x); }
 
-function user(){
- return el("u").value.trim();
+function username(){
+ return el("user").value.trim();
 }
 
 function join(){
- socket.emit("join", user());
+ socket.emit("join", username());
 }
 
-function go(path){
- if(user()) location.href = path + "?user=" + encodeURIComponent(user());
+function openPage(path){
+ let u = username();
+ if(!u) u = "Guest";
+ location.href = path + "?user=" + encodeURIComponent(u);
 }
 
 socket.on("joined", ()=>{
- el("u").style.display="none";
+ el("user").style.display="none";
 });
 
-socket.on("message", m=>{
- el("status").innerText = m;
+socket.on("message", msg=>{
+ el("status").innerText = msg;
 });
 
 socket.on("players", list=>{
- let t="PLAYERS\\n\\n";
+ let txt = "👥 PLAYERS\\n\\n";
  list.forEach(p=>{
-   t += p.display + (p.out?" ❌":" ✅") + "\\n";
+   txt += p.name + (p.out ? " ❌ OUT" : " ✅ IN") + "\\n";
  });
- el("players").innerText=t;
+ el("players").innerText = txt;
 });
 
-socket.on("tick", n=>{
- el("timer").innerText="⏱ "+n;
+socket.on("tick", t=>{
+ el("timer").innerText = "⏱ " + t;
 });
 
 socket.on("roundStart", ()=>{
- el("status").innerText="⚡ TAP RACE";
- el("tap").style.display="inline-block";
+ el("status").innerText = "⚡ TAP FAST!";
+ el("tapBtn").style.display="inline-block";
  el("scores").innerText="";
 });
 
-socket.on("scoreboard", b=>{
- let t="SCORES\\n\\n";
- b.forEach((p,i)=>{
-   t += (i+1)+". "+p.name+" - "+p.points+"\\n";
+socket.on("scoreboard", board=>{
+ let txt = "🏆 ROUND SCORES\\n\\n";
+ board.forEach((p,i)=>{
+   txt += (i+1)+". " + p.name + " - " + p.score + "\\n";
  });
- el("scores").innerText=t;
-});
-
-socket.on("roundEnd", n=>{
- el("status").innerText="❌ "+n+" eliminated";
- el("tap").style.display="none";
-});
-
-socket.on("winner", n=>{
- el("status").innerText="👑 "+n+" WINS!";
+ el("scores").innerText = txt;
+ el("tapBtn").style.display="none";
 });
 </script>
 </body>
@@ -321,159 +324,124 @@ socket.on("winner", n=>{
 `);
 });
 
-// ================= PROFILE =================
+// ===================== PROFILE =====================
 app.get("/profile", async (req, res) => {
-  const user = await getUser(req.query.user);
-  if (!user) return res.send("User not found");
+  const username = String(req.query.user || "Guest").trim();
+
+  const user = await ensureUser(username);
 
   res.send(`
-  <html><body style="background:#050505;color:white;text-align:center;font-family:Arial;padding:30px">
-  <h1>${user.username}</h1>
+  <html>
+  <head>${css()}</head>
+  <body>
+  <div class="wrap">
+  <div class="card">
+  <h1>👤 ${user.username}</h1>
   <h2>💰 Coins: ${user.coins}</h2>
   <h2>🏆 Wins: ${user.wins}</h2>
   <h2>🎮 Games: ${user.games}</h2>
-  <h2>🥇 Rank: ${getRank(user.wins)}</h2>
-  <h2>🎁 Owned: ${(user.items||[]).join(", ") || "None"}</h2>
-  <a href="/">⬅ Back</a>
-  </body></html>
+  <h2>🥇 Rank: ${rankFromWins(user.wins)}</h2>
+  <a class="btn" href="/">⬅ Home</a>
+  </div>
+  </div>
+  </body>
+  </html>
   `);
 });
 
-// ================= SHOP =================
-app.get("/shop", async (req, res) => {
-  const username = req.query.user;
-  const user = await getUser(username);
-  if (!user) return res.send("User not found");
-
+// ===================== LEADERBOARD =====================
+app.get("/leaderboard", async (req, res) => {
   let html = "";
 
-  for (const key in SHOP) {
-    const item = SHOP[key];
+  if (users) {
+    const top = await users.find().sort({ wins: -1 }).limit(10).toArray();
 
-    html += `
-    <div style="margin:15px;padding:15px;background:#111">
-    <h2>${item.name}</h2>
-    <p>${item.price} coins</p>
-    <a href="/buy?user=${username}&item=${key}">Buy</a> |
-    <a href="/equip?user=${username}&item=${key}">Equip</a>
-    </div>
-    `;
+    top.forEach((u, i) => {
+      html += `<h3>${i+1}. ${u.username} - ${u.wins} wins</h3>`;
+    });
+  } else {
+    html = "<h3>Database offline</h3>";
   }
 
   res.send(`
-  <html><body style="background:#050505;color:white;text-align:center;font-family:Arial;padding:30px">
-  <h1>SHOP</h1>
-  <h2>💰 ${user.coins}</h2>
+  <html>
+  <head>${css()}</head>
+  <body>
+  <div class="wrap">
+  <div class="card">
+  <h1>🏆 Leaderboard</h1>
   ${html}
-  <a href="/">⬅ Back</a>
-  </body></html>
+  <a class="btn" href="/">⬅ Home</a>
+  </div>
+  </div>
+  </body>
+  </html>
   `);
 });
 
-app.get("/buy", async (req, res) => {
-  await buyItem(req.query.user, req.query.item);
-  res.redirect("/shop?user=" + req.query.user);
-});
-
-app.get("/equip", async (req, res) => {
-  await equipItem(req.query.user, req.query.item);
-  res.redirect("/shop?user=" + req.query.user);
-});
-
-// ================= DAILY =================
-app.get("/daily", async (req, res) => {
-  const ok = await claimDaily(req.query.user);
-
-  res.send(`
-  <html><body style="background:#050505;color:white;text-align:center;padding:30px;font-family:Arial">
-  <h1>${ok ? "🎁 +100 Coins Claimed!" : "⏳ Come back later"}</h1>
-  <a href="/">⬅ Back</a>
-  </body></html>
-  `);
-});
-
-// ================= LEADERBOARD =================
-app.get("/leaderboard", async (req, res) => {
-  if (!users) return res.send("No DB");
-
-  const top = await users.find().sort({ wins: -1 }).limit(10).toArray();
-
-  let html = "<h1>🏆 Leaderboard</h1>";
-
-  top.forEach((u,i)=>{
-    html += "<h2>"+(i+1)+". "+u.username+" - "+u.wins+" wins</h2>";
-  });
-
-  res.send(`
-  <html><body style="background:#050505;color:white;text-align:center;padding:30px;font-family:Arial">
-  ${html}
-  <a href="/">⬅ Back</a>
-  </body></html>
-  `);
-});
-
-// ================= SOCKETS =================
+// ===================== SOCKETS =====================
 io.on("connection", socket => {
 
 socket.on("join", async username => {
-  if (started) {
-    socket.emit("message", "Game already started");
-    return;
-  }
+  try {
+    if (started) {
+      socket.emit("message", "Game already started");
+      return;
+    }
 
-  if (players.length >= 5) {
-    socket.emit("message", "Lobby Full");
-    return;
-  }
+    if (players.length >= 5) {
+      socket.emit("message", "Lobby full");
+      return;
+    }
 
-  username = String(username || "").trim();
-  if (!username) username = "Player" + (players.length + 1);
+    username = String(username || "").trim();
+    if (!username) username = "Player" + (players.length + 1);
 
-  await safeCreateUser(username);
+    await ensureUser(username);
+    await addGame(username);
 
-  const user = await getUser(username);
+    players.push({
+      id: socket.id,
+      name: username,
+      out: false
+    });
 
-  let display = username;
+    socket.emit("joined");
+    sendPlayers();
 
-  if (user && user.equipped && SHOP[user.equipped]) {
-    display = SHOP[user.equipped].icon + " " + username;
-  }
+    io.emit("message", players.length + "/5 Joined");
 
-  players.push({
-    id: socket.id,
-    name: username,
-    display,
-    out: false
-  });
+    if (players.length === 5) {
+      started = true;
+      io.emit("message", "🔥 5 Players Joined! Starting...");
+      setTimeout(startRound, 3000);
+    }
 
-  safeAddGame(username);
-
-  socket.emit("joined");
-  sendPlayers();
-
-  io.emit("message", players.length + "/5 Joined");
-
-  if (players.length === 5) {
-    started = true;
-    io.emit("message", "Starting...");
-    setTimeout(startRound, 3000);
+  } catch (err) {
+    console.log(err);
+    socket.emit("message", "Join failed");
   }
 });
 
-socket.on("score", ()=>{
-  if (!canPlay(socket.id)) return;
+socket.on("score", () => {
+  const p = getPlayer(socket.id);
+  if (!p || p.out || !playing) return;
+
   scores[socket.id] = (scores[socket.id] || 0) + 1;
 });
 
-socket.on("disconnect", ()=>{
+socket.on("disconnect", () => {
   players = players.filter(p => p.id !== socket.id);
   sendPlayers();
 
-  if (players.length === 0) resetGame();
+  if (players.length === 0) {
+    resetLobby();
+  }
 });
 
 });
 
-server.listen(PORT, ()=>{
-  console.log("Running on " + PORT);
+// ===================== START =====================
+server.listen(PORT, () => {
+  console.log("Running on port " + PORT);
 });
