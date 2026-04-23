@@ -1,3 +1,14 @@
+//
+// Neon Battle V6 Part 2A
+// Drop-in server.js
+// Features:
+// - Daily reward streak system
+// - Win streak bonuses
+// - Better shop
+// - Leaderboards (wins / coins / streak / games)
+// - Keeps 5-player join/start flow
+//
+
 const express = require("express");
 const http = require("http");
 const { Server } = require("socket.io");
@@ -13,19 +24,12 @@ const io = new Server(server, {
 const PORT = process.env.PORT || 3000;
 const MONGO_URI = process.env.MONGO_URI;
 
-// ================= DATABASE =================
+// ================= DB =================
 let users = null;
-
-const SHOP = {
-  crown: { name: "👑 Crown", price: 250, icon: "👑" },
-  fire: { name: "🔥 Fire", price: 500, icon: "🔥" },
-  diamond: { name: "💎 Diamond", price: 1000, icon: "💎" },
-  star: { name: "⭐ Star", price: 1500, icon: "⭐" }
-};
 
 async function connectDB() {
   if (!MONGO_URI) {
-    console.log("No MONGO_URI found.");
+    console.log("No MONGO_URI found");
     return;
   }
 
@@ -41,6 +45,53 @@ async function connectDB() {
 }
 connectDB();
 
+// ================= SHOP =================
+const SHOP = {
+  crown: { name: "👑 Crown", price: 250, icon: "👑" },
+  fire: { name: "🔥 Fire", price: 500, icon: "🔥" },
+  diamond: { name: "💎 Diamond", price: 1000, icon: "💎" },
+  vip: { name: "⭐ VIP", price: 2000, icon: "⭐" }
+};
+
+// ================= HELPERS =================
+function css() {
+return `
+<style>
+body{margin:0;background:#050505;color:#fff;font-family:Arial;text-align:center}
+.wrap{max-width:850px;margin:auto;padding:20px}
+.card{background:#111;padding:24px;border-radius:20px;box-shadow:0 0 25px #00ffe1;margin-top:20px}
+input{padding:12px;width:240px;border:none;border-radius:10px;background:#222;color:#fff}
+button,a.btn{padding:12px 18px;margin:5px;border:none;border-radius:10px;background:#00ffe1;color:#000;font-weight:bold;text-decoration:none;display:inline-block;cursor:pointer}
+pre{background:#000;padding:15px;border-radius:12px;text-align:left;white-space:pre-line}
+.shop{background:#000;padding:14px;border-radius:12px;margin:10px}
+small{opacity:.75}
+</style>
+`;
+}
+
+function rankFromWins(w) {
+  if (w >= 50) return "Champion";
+  if (w >= 30) return "Diamond";
+  if (w >= 15) return "Gold";
+  if (w >= 5) return "Silver";
+  return "Bronze";
+}
+
+function rewardForDailyStreak(streak) {
+  if (streak <= 1) return 50;
+  if (streak === 2) return 75;
+  if (streak === 3) return 100;
+  if (streak === 4) return 125;
+  return 150;
+}
+
+function winStreakBonus(streak) {
+  if (streak >= 5) return 100;
+  if (streak >= 3) return 50;
+  if (streak >= 2) return 25;
+  return 0;
+}
+
 async function ensureUser(username) {
   if (!users) {
     return {
@@ -50,7 +101,10 @@ async function ensureUser(username) {
       games: 0,
       items: [],
       equipped: "",
-      lastDaily: 0
+      lastDaily: 0,
+      dailyStreak: 0,
+      winStreak: 0,
+      bestWinStreak: 0
     };
   }
 
@@ -64,7 +118,10 @@ async function ensureUser(username) {
       games: 0,
       items: [],
       equipped: "",
-      lastDaily: 0
+      lastDaily: 0,
+      dailyStreak: 0,
+      winStreak: 0,
+      bestWinStreak: 0
     });
 
     user = await users.findOne({ username });
@@ -78,17 +135,87 @@ async function getUser(username) {
   return await users.findOne({ username });
 }
 
+function displayName(user) {
+  if (!user) return "Player";
+  if (user.equipped && SHOP[user.equipped]) {
+    return SHOP[user.equipped].icon + " " + user.username;
+  }
+  return user.username;
+}
+
 async function addGame(username) {
   if (!users) return;
-  await users.updateOne({ username }, { $inc: { games: 1 } });
+  await users.updateOne(
+    { username },
+    { $inc: { games: 1 } }
+  );
+}
+
+async function addLoss(username) {
+  if (!users) return;
+  await users.updateOne(
+    { username },
+    { $set: { winStreak: 0 } }
+  );
 }
 
 async function addWin(username) {
   if (!users) return;
+
+  const user = await ensureUser(username);
+  const newStreak = (user.winStreak || 0) + 1;
+  const bonus = winStreakBonus(newStreak);
+
   await users.updateOne(
     { username },
-    { $inc: { wins: 1, coins: 50 } }
+    {
+      $inc: {
+        wins: 1,
+        coins: 50 + bonus
+      },
+      $set: {
+        winStreak: newStreak,
+        bestWinStreak: Math.max(newStreak, user.bestWinStreak || 0)
+      }
+    }
   );
+
+  return bonus;
+}
+
+async function claimDaily(username) {
+  if (!users) return { ok: false, msg: "DB offline" };
+
+  const user = await ensureUser(username);
+  const now = Date.now();
+  const last = user.lastDaily || 0;
+  const diff = now - last;
+
+  if (diff < 86400000) {
+    return { ok: false, msg: "Already claimed today" };
+  }
+
+  let streak = 1;
+
+  // within 48h keeps streak alive
+  if (diff < 172800000 && last > 0) {
+    streak = (user.dailyStreak || 0) + 1;
+  }
+
+  const reward = rewardForDailyStreak(streak);
+
+  await users.updateOne(
+    { username },
+    {
+      $inc: { coins: reward },
+      $set: {
+        lastDaily: now,
+        dailyStreak: streak
+      }
+    }
+  );
+
+  return { ok: true, reward, streak };
 }
 
 async function buyItem(username, item) {
@@ -114,7 +241,6 @@ async function equipItem(username, item) {
   if (!users || !SHOP[item]) return false;
 
   const user = await ensureUser(username);
-
   if (!(user.items || []).includes(item)) return false;
 
   await users.updateOne(
@@ -125,49 +251,12 @@ async function equipItem(username, item) {
   return true;
 }
 
-async function claimDaily(username) {
-  if (!users) return false;
-
-  const user = await ensureUser(username);
-  const now = Date.now();
-
-  if (now - (user.lastDaily || 0) < 86400000) {
-    return false;
-  }
-
-  await users.updateOne(
-    { username },
-    {
-      $inc: { coins: 100 },
-      $set: { lastDaily: now }
-    }
-  );
-
-  return true;
-}
-
-function rankFromWins(wins) {
-  if (wins >= 50) return "Champion";
-  if (wins >= 30) return "Diamond";
-  if (wins >= 15) return "Gold";
-  if (wins >= 5) return "Silver";
-  return "Bronze";
-}
-
-function displayName(user) {
-  if (!user) return "Player";
-  if (user.equipped && SHOP[user.equipped]) {
-    return SHOP[user.equipped].icon + " " + user.username;
-  }
-  return user.username;
-}
-
 // ================= GAME =================
 let players = [];
 let started = false;
 let playing = false;
-let scores = {};
 let timer = 10;
+let scores = {};
 let loop = null;
 
 function alive() {
@@ -186,8 +275,8 @@ function resetLobby() {
   players = [];
   started = false;
   playing = false;
-  scores = {};
   timer = 10;
+  scores = {};
   if (loop) clearInterval(loop);
 }
 
@@ -198,7 +287,9 @@ function startRound() {
   timer = 10;
   scores = {};
 
-  alive().forEach(p => scores[p.id] = 0);
+  alive().forEach(p => {
+    scores[p.id] = 0;
+  });
 
   io.emit("roundStart");
 
@@ -219,22 +310,31 @@ async function endRound() {
   const board = alive()
     .map(p => ({
       id: p.id,
+      username: p.username,
       name: p.name,
       score: scores[p.id] || 0
     }))
     .sort((a, b) => a.score - b.score);
 
   const loser = getPlayer(board[0].id);
-  loser.out = true;
+  if (loser) loser.out = true;
+
+  await addLoss(board[0].username);
 
   sendPlayers();
   io.emit("scoreboard", board);
-  io.emit("message", "❌ " + loser.name + " eliminated");
+  io.emit("message", "❌ " + board[0].name + " eliminated");
 
   if (alive().length === 1) {
     const winner = alive()[0];
-    await addWin(winner.username);
-    io.emit("message", "👑 " + winner.name + " wins!");
+    const bonus = await addWin(winner.username);
+
+    io.emit(
+      "message",
+      "👑 " + winner.name + " wins! +50 coins" +
+      (bonus ? " +" + bonus + " streak bonus" : "")
+    );
+
     started = false;
     return;
   }
@@ -242,80 +342,19 @@ async function endRound() {
   setTimeout(startRound, 4000);
 }
 
-// ================= CSS =================
-function css() {
-return `
-<style>
-body{
-margin:0;
-padding:0;
-background:#050505;
-color:#fff;
-font-family:Arial;
-text-align:center;
-}
-.wrap{
-max-width:800px;
-margin:auto;
-padding:20px;
-}
-.card{
-background:#111;
-padding:25px;
-border-radius:20px;
-box-shadow:0 0 25px #00ffe1;
-margin-top:20px;
-}
-input{
-padding:12px;
-width:240px;
-border:none;
-border-radius:10px;
-background:#222;
-color:white;
-}
-button,a.btn{
-padding:12px 18px;
-margin:5px;
-border:none;
-border-radius:10px;
-background:#00ffe1;
-color:#000;
-font-weight:bold;
-text-decoration:none;
-display:inline-block;
-cursor:pointer;
-}
-pre{
-background:#000;
-padding:15px;
-border-radius:12px;
-text-align:left;
-white-space:pre-line;
-}
-.shop{
-background:#000;
-padding:15px;
-margin:10px;
-border-radius:12px;
-}
-</style>
-`;
-}
-
 // ================= HOME =================
 app.get("/", (req, res) => {
 res.send(`
 <html>
 <head>
-<title>Neon Battle V6</title>
+<title>Neon Battle V6.2A</title>
 ${css()}
 </head>
 <body>
 <div class="wrap">
 <div class="card">
 
-<h1>⚡ Neon Battle V6 ⚡</h1>
+<h1>⚡ Neon Battle ⚡</h1>
 
 <input id="user" placeholder="Username">
 <button onclick="join()">JOIN</button>
@@ -325,7 +364,7 @@ ${css()}
 <button onclick="go('/profile')">👤 Profile</button>
 <button onclick="go('/shop')">🛒 Shop</button>
 <button onclick="go('/daily')">🎁 Daily</button>
-<button onclick="go('/leaderboard')">🏆 Leaderboard</button>
+<button onclick="go('/leaderboard')">🏆 Leaderboards</button>
 
 <h2 id="status">Waiting for 5 players...</h2>
 <h3 id="timer"></h3>
@@ -335,6 +374,8 @@ ${css()}
 <pre id="players"></pre>
 <pre id="scores"></pre>
 
+<small>Win = 50 coins + streak bonuses</small>
+
 </div>
 </div>
 
@@ -342,7 +383,7 @@ ${css()}
 <script>
 const socket = io();
 
-function el(x){return document.getElementById(x)}
+function el(x){ return document.getElementById(x); }
 
 function username(){
  return el("user").value.trim() || "Guest";
@@ -365,32 +406,33 @@ socket.on("message", m=>{
 });
 
 socket.on("players", list=>{
- let t="PLAYERS\\n\\n";
+ let txt = "PLAYERS\\n\\n";
  list.forEach(p=>{
-   t += p.name + (p.out ? " ❌ OUT" : " ✅ IN") + "\\n";
+   txt += p.name + (p.out ? " ❌ OUT" : " ✅ IN") + "\\n";
  });
- el("players").innerText=t;
+ el("players").innerText = txt;
 });
 
-socket.on("tick", n=>{
- el("timer").innerText="⏱ " + n;
+socket.on("tick", t=>{
+ el("timer").innerText = "⏱ " + t;
 });
 
 socket.on("roundStart", ()=>{
- el("status").innerText="⚡ TAP RACE";
- el("tap").style.display="inline-block";
- el("scores").innerText="";
+ el("status").innerText = "⚡ TAP RACE";
+ el("tap").style.display = "inline-block";
+ el("scores").innerText = "";
 });
 
-socket.on("scoreboard", b=>{
- let t="ROUND SCORES\\n\\n";
- b.forEach((p,i)=>{
-   t += (i+1)+". "+p.name+" - "+p.score+"\\n";
+socket.on("scoreboard", board=>{
+ let txt = "ROUND SCORES\\n\\n";
+ board.forEach((p,i)=>{
+   txt += (i+1)+". "+p.name+" - "+p.score+"\\n";
  });
- el("scores").innerText=t;
- el("tap").style.display="none";
+ el("scores").innerText = txt;
+ el("tap").style.display = "none";
 });
 </script>
+
 </body>
 </html>
 `);
@@ -401,21 +443,26 @@ app.get("/profile", async (req, res) => {
   const username = req.query.user || "Guest";
   const user = await ensureUser(username);
 
-  const winRate = user.games > 0
+  const winRate = user.games
     ? ((user.wins / user.games) * 100).toFixed(1)
-    : 0;
+    : "0";
 
   res.send(`
   <html><head>${css()}</head><body>
   <div class="wrap"><div class="card">
+
   <h1>${displayName(user)}</h1>
   <h2>💰 Coins: ${user.coins}</h2>
   <h2>🏆 Wins: ${user.wins}</h2>
   <h2>🎮 Games: ${user.games}</h2>
   <h2>📈 Win Rate: ${winRate}%</h2>
   <h2>🥇 Rank: ${rankFromWins(user.wins)}</h2>
-  <h3>🎒 Items: ${(user.items || []).join(", ") || "None"}</h3>
+  <h2>🔥 Win Streak: ${user.winStreak || 0}</h2>
+  <h2>⭐ Best Streak: ${user.bestWinStreak || 0}</h2>
+  <h2>🎁 Daily Streak: ${user.dailyStreak || 0}</h2>
+
   <a class="btn" href="/">⬅ Home</a>
+
   </div></div>
   </body></html>
   `);
@@ -428,30 +475,34 @@ app.get("/shop", async (req, res) => {
 
   let html = "";
 
-  for (let key in SHOP) {
+  for (const key in SHOP) {
     const item = SHOP[key];
     const owned = (user.items || []).includes(key);
 
     html += `
-    <div class="shop">
-    <h2>${item.name}</h2>
-    <p>${item.price} Coins</p>
-    ${
-      owned
-      ? `<a class="btn" href="/equip?user=${username}&item=${key}">Equip</a>`
-      : `<a class="btn" href="/buy?user=${username}&item=${key}">Buy</a>`
-    }
-    </div>
+      <div class="shop">
+        <h2>${item.name}</h2>
+        <p>${item.price} coins</p>
+        ${
+          owned
+          ? `<a class="btn" href="/equip?user=${username}&item=${key}">Equip</a>`
+          : `<a class="btn" href="/buy?user=${username}&item=${key}">Buy</a>`
+        }
+      </div>
     `;
   }
 
   res.send(`
   <html><head>${css()}</head><body>
   <div class="wrap"><div class="card">
+
   <h1>🛒 Shop</h1>
   <h2>💰 ${user.coins} Coins</h2>
+
   ${html}
+
   <a class="btn" href="/">⬅ Home</a>
+
   </div></div>
   </body></html>
   `);
@@ -470,36 +521,58 @@ app.get("/equip", async (req, res) => {
 // ================= DAILY =================
 app.get("/daily", async (req, res) => {
   const username = req.query.user || "Guest";
-  const ok = await claimDaily(username);
+  const result = await claimDaily(username);
 
-  res.send(`
-  <html><head>${css()}</head><body>
-  <div class="wrap"><div class="card">
-  <h1>${ok ? "🎁 +100 Coins Claimed!" : "⏳ Already claimed today"}</h1>
-  <a class="btn" href="/">⬅ Home</a>
-  </div></div>
-  </body></html>
-  `);
-});
-
-// ================= LEADERBOARD =================
-app.get("/leaderboard", async (req, res) => {
-  let html = "";
-
-  if (users) {
-    const top = await users.find().sort({ wins: -1 }).limit(10).toArray();
-
-    top.forEach((u,i)=>{
-      html += `<h2>${i+1}. ${u.username} - ${u.wins} wins</h2>`;
-    });
+  let msg = result.msg;
+  if (result.ok) {
+    msg = "🎁 +" + result.reward + " Coins<br>Daily Streak: " + result.streak;
   }
 
   res.send(`
   <html><head>${css()}</head><body>
   <div class="wrap"><div class="card">
-  <h1>🏆 Leaderboard</h1>
-  ${html}
+
+  <h1>${msg}</h1>
+
   <a class="btn" href="/">⬅ Home</a>
+
+  </div></div>
+  </body></html>
+  `);
+});
+
+// ================= LEADERBOARDS =================
+app.get("/leaderboard", async (req, res) => {
+  if (!users) {
+    return res.send("DB offline");
+  }
+
+  const wins = await users.find().sort({ wins: -1 }).limit(5).toArray();
+  const coins = await users.find().sort({ coins: -1 }).limit(5).toArray();
+  const streak = await users.find().sort({ bestWinStreak: -1 }).limit(5).toArray();
+  const games = await users.find().sort({ games: -1 }).limit(5).toArray();
+
+  function block(title, arr, field) {
+    let h = `<h2>${title}</h2>`;
+    arr.forEach((u,i)=>{
+      h += `<p>${i+1}. ${u.username} - ${u[field] || 0}</p>`;
+    });
+    return h;
+  }
+
+  res.send(`
+  <html><head>${css()}</head><body>
+  <div class="wrap"><div class="card">
+
+  <h1>🏆 Leaderboards</h1>
+
+  ${block("Most Wins", wins, "wins")}
+  ${block("Most Coins", coins, "coins")}
+  ${block("Best Win Streak", streak, "bestWinStreak")}
+  ${block("Most Games", games, "games")}
+
+  <a class="btn" href="/">⬅ Home</a>
+
   </div></div>
   </body></html>
   `);
