@@ -17,9 +17,9 @@ const MONGO_URI = process.env.MONGO_URI;
 let users = null;
 
 const SHOP = {
-  fire: { name: "🔥 Fire Name", price: 250 },
-  crown: { name: "👑 Crown Trail", price: 500 },
-  diamond: { name: "💎 Diamond Glow", price: 800 }
+  fire: { name: "🔥 Fire Name", price: 250, icon: "🔥" },
+  crown: { name: "👑 Crown Trail", price: 500, icon: "👑" },
+  diamond: { name: "💎 Diamond Glow", price: 800, icon: "💎" }
 };
 
 async function connectDB() {
@@ -31,10 +31,8 @@ async function connectDB() {
   try {
     const client = new MongoClient(MONGO_URI);
     await client.connect();
-
     const db = client.db("neonbattle");
     users = db.collection("users");
-
     console.log("Mongo Connected ✅");
   } catch (err) {
     console.log("Mongo Failed:", err.message);
@@ -53,9 +51,16 @@ async function safeCreateUser(username) {
       wins: 0,
       coins: 0,
       games: 0,
-      items: []
+      items: [],
+      equipped: "",
+      lastDaily: 0
     });
   }
+}
+
+async function getUser(username) {
+  if (!users) return null;
+  return await users.findOne({ username });
 }
 
 async function safeAddGame(username) {
@@ -71,15 +76,10 @@ async function safeAddWin(username) {
   );
 }
 
-async function getUser(username) {
-  if (!users) return null;
-  return await users.findOne({ username });
-}
-
 async function buyItem(username, key) {
   if (!users || !SHOP[key]) return false;
 
-  const user = await users.findOne({ username });
+  const user = await getUser(username);
   if (!user) return false;
 
   if (user.coins < SHOP[key].price) return false;
@@ -96,6 +96,52 @@ async function buyItem(username, key) {
   return true;
 }
 
+async function equipItem(username, key) {
+  if (!users) return false;
+
+  const user = await getUser(username);
+  if (!user) return false;
+
+  if (!(user.items || []).includes(key)) return false;
+
+  await users.updateOne(
+    { username },
+    { $set: { equipped: key } }
+  );
+
+  return true;
+}
+
+async function claimDaily(username) {
+  if (!users) return false;
+
+  const user = await getUser(username);
+  if (!user) return false;
+
+  const now = Date.now();
+  const diff = now - (user.lastDaily || 0);
+
+  if (diff < 86400000) return false;
+
+  await users.updateOne(
+    { username },
+    {
+      $inc: { coins: 100 },
+      $set: { lastDaily: now }
+    }
+  );
+
+  return true;
+}
+
+function getRank(wins) {
+  if (wins >= 50) return "Champion";
+  if (wins >= 30) return "Diamond";
+  if (wins >= 15) return "Gold";
+  if (wins >= 5) return "Silver";
+  return "Bronze";
+}
+
 // ================= GAME =================
 let players = [];
 let started = false;
@@ -103,9 +149,6 @@ let playing = false;
 let scores = {};
 let timer = 10;
 let loop = null;
-
-const games = ["tap", "math", "door", "spam"];
-let currentGame = "tap";
 
 function alive() {
   return players.filter(p => !p.out);
@@ -130,23 +173,19 @@ function resetGame() {
   playing = false;
   scores = {};
   timer = 10;
-
   if (loop) clearInterval(loop);
 }
 
 function startRound() {
   if (alive().length <= 1) return;
 
-  currentGame = games[Math.floor(Math.random() * games.length)];
   playing = true;
   timer = 10;
   scores = {};
 
-  alive().forEach(p => {
-    scores[p.id] = 0;
-  });
+  alive().forEach(p => scores[p.id] = 0);
 
-  io.emit("roundStart", { game: currentGame });
+  io.emit("roundStart");
 
   loop = setInterval(() => {
     timer--;
@@ -165,7 +204,7 @@ async function endRound() {
   const board = alive()
     .map(p => ({
       id: p.id,
-      name: p.name,
+      name: p.display,
       points: scores[p.id] || 0
     }))
     .sort((a, b) => a.points - b.points);
@@ -176,17 +215,14 @@ async function endRound() {
   sendPlayers();
 
   io.emit("scoreboard", board);
-  io.emit("roundEnd", {
-    name: loser.name,
-    points: board[0].points
-  });
+  io.emit("roundEnd", loser.display);
 
   if (alive().length === 1) {
     const winner = alive()[0];
 
     await safeAddWin(winner.name);
 
-    io.emit("winner", winner.name);
+    io.emit("winner", winner.display);
 
     started = false;
     return;
@@ -195,213 +231,118 @@ async function endRound() {
   setTimeout(startRound, 4000);
 }
 
-// ================= ROUTES =================
-
+// ================= HOME =================
 app.get("/", (req, res) => {
 res.send(`
-<!DOCTYPE html>
 <html>
-<head>
-<meta name="viewport" content="width=device-width,initial-scale=1">
-<title>Neon Battle V5</title>
+<body style="background:#050505;color:white;font-family:Arial;text-align:center;padding:20px">
+<h1>⚡ Neon Battle V5 Part 3 ⚡</h1>
 
-<style>
-body{
-background:#050505;
-color:white;
-font-family:Arial;
-text-align:center;
-padding:20px;
-margin:0;
-}
-
-.box{
-max-width:750px;
-margin:auto;
-background:#111;
-padding:25px;
-border-radius:20px;
-box-shadow:0 0 25px #00ffe1;
-}
-
-input,button{
-padding:14px;
-margin:6px;
-border:none;
-border-radius:10px;
-font-size:16px;
-}
-
-input{
-background:#222;
-color:white;
-}
-
-button{
-background:#00ffe1;
-font-weight:bold;
-cursor:pointer;
-}
-
-.hidden{
-display:none;
-}
-
-#players,#score{
-white-space:pre-line;
-text-align:left;
-background:#000;
-padding:15px;
-border-radius:12px;
-margin-top:15px;
-}
-</style>
-</head>
-
-<body>
-
-<div class="box">
-
-<h1>⚡ Neon Battle V5 ⚡</h1>
-
-<div id="joinBox">
-<input id="username" placeholder="Your Name">
+<input id="u" placeholder="Username" style="padding:12px">
 <button onclick="join()">JOIN</button>
+<br><br>
 
-<div>
-<button onclick="goProfile()">👤 Profile</button>
-<button onclick="goShop()">🛒 Shop</button>
-</div>
-</div>
+<button onclick="go('/profile')">👤 Profile</button>
+<button onclick="go('/shop')">🛒 Shop</button>
+<button onclick="go('/leaderboard')">🏆 Leaderboard</button>
+<button onclick="go('/daily')">🎁 Daily</button>
 
 <h2 id="status">Waiting for 5 players...</h2>
 <h3 id="timer"></h3>
 
-<button id="tapBtn" class="hidden" onclick="socket.emit('score')">TAP!</button>
+<button id="tap" style="display:none;padding:25px;font-size:30px" onclick="socket.emit('score')">TAP!</button>
 
-<div id="players"></div>
-<div id="score"></div>
-
-</div>
+<pre id="players"></pre>
+<pre id="scores"></pre>
 
 <script src="/socket.io/socket.io.js"></script>
-
 <script>
-const socket = io({
- transports:["websocket","polling"]
-});
+const socket = io();
 
-function el(x){
- return document.getElementById(x);
+function el(x){return document.getElementById(x)}
+
+function user(){
+ return el("u").value.trim();
 }
 
 function join(){
- const n = el("username").value.trim();
- socket.emit("join", n);
+ socket.emit("join", user());
 }
 
-function goProfile(){
- const u = el("username").value.trim();
- if(u) location.href="/profile?user="+encodeURIComponent(u);
-}
-
-function goShop(){
- const u = el("username").value.trim();
- if(u) location.href="/shop?user="+encodeURIComponent(u);
+function go(path){
+ if(user()) location.href = path + "?user=" + encodeURIComponent(user());
 }
 
 socket.on("joined", ()=>{
- el("joinBox").style.display="none";
+ el("u").style.display="none";
 });
 
-socket.on("message", msg=>{
- el("status").innerText = msg;
+socket.on("message", m=>{
+ el("status").innerText = m;
 });
 
 socket.on("players", list=>{
- let txt="👥 PLAYERS\\n\\n";
-
+ let t="PLAYERS\\n\\n";
  list.forEach(p=>{
-   txt += p.name + (p.out ? " ❌ OUT" : " ✅ IN") + "\\n";
+   t += p.display + (p.out?" ❌":" ✅") + "\\n";
  });
-
- el("players").innerText = txt;
+ el("players").innerText=t;
 });
 
-socket.on("tick", t=>{
- el("timer").innerText = "⏱ " + t;
+socket.on("tick", n=>{
+ el("timer").innerText="⏱ "+n;
 });
 
-socket.on("roundStart", data=>{
- el("score").innerText="";
-
- if(data.game==="tap"){
-   el("status").innerText="⚡ TAP RACE";
-   el("tapBtn").classList.remove("hidden");
- } else {
-   el("status").innerText="🎮 " + data.game.toUpperCase();
-   el("tapBtn").classList.add("hidden");
- }
+socket.on("roundStart", ()=>{
+ el("status").innerText="⚡ TAP RACE";
+ el("tap").style.display="inline-block";
+ el("scores").innerText="";
 });
 
-socket.on("scoreboard", board=>{
- let txt="🏆 SCORES\\n\\n";
-
- board.forEach((p,i)=>{
-   txt += (i+1)+". "+p.name+" - "+p.points+"\\n";
+socket.on("scoreboard", b=>{
+ let t="SCORES\\n\\n";
+ b.forEach((p,i)=>{
+   t += (i+1)+". "+p.name+" - "+p.points+"\\n";
  });
-
- el("score").innerText = txt;
+ el("scores").innerText=t;
 });
 
-socket.on("roundEnd", d=>{
- el("status").innerText = "❌ " + d.name + " eliminated";
- el("tapBtn").classList.add("hidden");
+socket.on("roundEnd", n=>{
+ el("status").innerText="❌ "+n+" eliminated";
+ el("tap").style.display="none";
 });
 
-socket.on("winner", name=>{
- el("status").innerText = "👑 " + name + " wins +50 coins!";
+socket.on("winner", n=>{
+ el("status").innerText="👑 "+n+" WINS!";
 });
 </script>
-
 </body>
 </html>
 `);
 });
 
-// PROFILE PAGE
+// ================= PROFILE =================
 app.get("/profile", async (req, res) => {
-  const username = req.query.user;
-
-  if (!username) return res.send("No username");
-
-  const user = await getUser(username);
-
+  const user = await getUser(req.query.user);
   if (!user) return res.send("User not found");
 
   res.send(`
-  <html>
-  <body style="background:#050505;color:white;font-family:Arial;text-align:center;padding:30px">
-  <h1>👤 ${user.username}</h1>
+  <html><body style="background:#050505;color:white;text-align:center;font-family:Arial;padding:30px">
+  <h1>${user.username}</h1>
   <h2>💰 Coins: ${user.coins}</h2>
   <h2>🏆 Wins: ${user.wins}</h2>
   <h2>🎮 Games: ${user.games}</h2>
-  <h2>🎁 Owned: ${(user.items || []).join(", ") || "None"}</h2>
-  <br><br>
-  <a href="/" style="color:#00ffe1">⬅ Back</a>
-  </body>
-  </html>
+  <h2>🥇 Rank: ${getRank(user.wins)}</h2>
+  <h2>🎁 Owned: ${(user.items||[]).join(", ") || "None"}</h2>
+  <a href="/">⬅ Back</a>
+  </body></html>
   `);
 });
 
-// SHOP PAGE
+// ================= SHOP =================
 app.get("/shop", async (req, res) => {
   const username = req.query.user;
-
-  if (!username) return res.send("No username");
-
   const user = await getUser(username);
-
   if (!user) return res.send("User not found");
 
   let html = "";
@@ -410,113 +351,129 @@ app.get("/shop", async (req, res) => {
     const item = SHOP[key];
 
     html += `
-    <div style="margin:15px;padding:15px;background:#111;border-radius:12px">
-      <h2>${item.name}</h2>
-      <p>💰 ${item.price}</p>
-      <a href="/buy?user=${username}&item=${key}">
-        <button style="padding:10px 20px">Buy</button>
-      </a>
+    <div style="margin:15px;padding:15px;background:#111">
+    <h2>${item.name}</h2>
+    <p>${item.price} coins</p>
+    <a href="/buy?user=${username}&item=${key}">Buy</a> |
+    <a href="/equip?user=${username}&item=${key}">Equip</a>
     </div>
     `;
   }
 
   res.send(`
-  <html>
-  <body style="background:#050505;color:white;font-family:Arial;text-align:center;padding:30px">
-  <h1>🛒 SHOP</h1>
-  <h2>${username}</h2>
-  <h2>💰 Coins: ${user.coins}</h2>
+  <html><body style="background:#050505;color:white;text-align:center;font-family:Arial;padding:30px">
+  <h1>SHOP</h1>
+  <h2>💰 ${user.coins}</h2>
   ${html}
-  <br>
-  <a href="/" style="color:#00ffe1">⬅ Back</a>
-  </body>
-  </html>
+  <a href="/">⬅ Back</a>
+  </body></html>
   `);
 });
 
-// BUY
 app.get("/buy", async (req, res) => {
-  const username = req.query.user;
-  const item = req.query.item;
+  await buyItem(req.query.user, req.query.item);
+  res.redirect("/shop?user=" + req.query.user);
+});
 
-  const ok = await buyItem(username, item);
+app.get("/equip", async (req, res) => {
+  await equipItem(req.query.user, req.query.item);
+  res.redirect("/shop?user=" + req.query.user);
+});
 
-  if (ok) {
-    res.redirect("/shop?user=" + username);
-  } else {
-    res.send("Purchase failed. <a href='/shop?user=" + username + "'>Back</a>");
-  }
+// ================= DAILY =================
+app.get("/daily", async (req, res) => {
+  const ok = await claimDaily(req.query.user);
+
+  res.send(`
+  <html><body style="background:#050505;color:white;text-align:center;padding:30px;font-family:Arial">
+  <h1>${ok ? "🎁 +100 Coins Claimed!" : "⏳ Come back later"}</h1>
+  <a href="/">⬅ Back</a>
+  </body></html>
+  `);
+});
+
+// ================= LEADERBOARD =================
+app.get("/leaderboard", async (req, res) => {
+  if (!users) return res.send("No DB");
+
+  const top = await users.find().sort({ wins: -1 }).limit(10).toArray();
+
+  let html = "<h1>🏆 Leaderboard</h1>";
+
+  top.forEach((u,i)=>{
+    html += "<h2>"+(i+1)+". "+u.username+" - "+u.wins+" wins</h2>";
+  });
+
+  res.send(`
+  <html><body style="background:#050505;color:white;text-align:center;padding:30px;font-family:Arial">
+  ${html}
+  <a href="/">⬅ Back</a>
+  </body></html>
+  `);
 });
 
 // ================= SOCKETS =================
-
 io.on("connection", socket => {
 
 socket.on("join", async username => {
-  try {
-    if (started) {
-      socket.emit("message", "Game already started");
-      return;
-    }
+  if (started) {
+    socket.emit("message", "Game already started");
+    return;
+  }
 
-    if (players.length >= 5) {
-      socket.emit("message", "Lobby Full");
-      return;
-    }
+  if (players.length >= 5) {
+    socket.emit("message", "Lobby Full");
+    return;
+  }
 
-    username = String(username || "").trim();
+  username = String(username || "").trim();
+  if (!username) username = "Player" + (players.length + 1);
 
-    if (!username) {
-      username = "Player" + (players.length + 1);
-    }
+  await safeCreateUser(username);
 
-    players.push({
-      id: socket.id,
-      name: username,
-      out: false
-    });
+  const user = await getUser(username);
 
-    socket.emit("joined");
+  let display = username;
 
-    sendPlayers();
+  if (user && user.equipped && SHOP[user.equipped]) {
+    display = SHOP[user.equipped].icon + " " + username;
+  }
 
-    io.emit("message", players.length + "/5 Joined");
+  players.push({
+    id: socket.id,
+    name: username,
+    display,
+    out: false
+  });
 
-    safeCreateUser(username);
-    safeAddGame(username);
+  safeAddGame(username);
 
-    if (players.length === 5) {
-      started = true;
-      io.emit("message", "5 Players Joined! Starting...");
-      setTimeout(startRound, 3000);
-    }
+  socket.emit("joined");
+  sendPlayers();
 
-  } catch (err) {
-    socket.emit("message", "Join failed");
-    console.log(err);
+  io.emit("message", players.length + "/5 Joined");
+
+  if (players.length === 5) {
+    started = true;
+    io.emit("message", "Starting...");
+    setTimeout(startRound, 3000);
   }
 });
 
 socket.on("score", ()=>{
   if (!canPlay(socket.id)) return;
-
   scores[socket.id] = (scores[socket.id] || 0) + 1;
 });
 
 socket.on("disconnect", ()=>{
   players = players.filter(p => p.id !== socket.id);
-
   sendPlayers();
 
-  if (players.length === 0) {
-    resetGame();
-  }
+  if (players.length === 0) resetGame();
 });
 
 });
 
-// ================= START =================
-
-server.listen(PORT, () => {
+server.listen(PORT, ()=>{
   console.log("Running on " + PORT);
 });
