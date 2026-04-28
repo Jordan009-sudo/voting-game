@@ -1,14 +1,8 @@
-// BUILD V8.1 STABLE ACCOUNTS
-// server.js
-// Render + GitHub ready
-// Features:
-// - Register
-// - Login
-// - Logout
-// - Sessions fixed for Render
-// - Mongo safe fallback
-// - Password hashing
-// - Better deploy stability
+// =========================================
+// NEON BATTLE V8.2 FULL
+// Accounts + Coins + Profiles + Daily Reward + Leaderboard
+// Render + Mongo Ready
+// =========================================
 
 const express = require("express");
 const session = require("express-session");
@@ -16,52 +10,32 @@ const bcrypt = require("bcryptjs");
 const { MongoClient } = require("mongodb");
 
 const app = express();
-
-const PORT = process.env.PORT || 3000;
-const MONGO_URI = process.env.MONGO_URI || "";
-const SESSION_SECRET =
-  process.env.SESSION_SECRET || "change_this_secret";
-
-// ================= PARSERS =================
 app.use(express.urlencoded({ extended: true }));
 app.use(express.json());
 
-// ================= RENDER FIX =================
-app.set("trust proxy", 1);
+// ================= PORT =================
+const PORT = process.env.PORT || 10000;
 
 // ================= SESSION =================
 app.use(
   session({
-    secret: SESSION_SECRET,
+    secret: process.env.SESSION_SECRET || "neonbattle_secret",
     resave: false,
     saveUninitialized: false,
-    cookie: {
-      secure: false, // Render works fine with this
-      maxAge: 1000 * 60 * 60 * 24 * 7
-    }
+    cookie: { maxAge: 1000 * 60 * 60 * 24 * 30 }
   })
 );
 
 // ================= DB =================
-let users = null;
+let users;
 
 async function connectDB() {
-  if (!MONGO_URI) {
-    console.log("No MONGO_URI set");
-    return;
-  }
-
   try {
-    const client = new MongoClient(MONGO_URI);
+    const client = new MongoClient(process.env.MONGO_URI);
     await client.connect();
 
     const db = client.db("neonbattle");
     users = db.collection("users");
-
-    await users.createIndex(
-      { username: 1 },
-      { unique: true }
-    );
 
     console.log("Mongo Connected ✅");
   } catch (err) {
@@ -71,281 +45,311 @@ async function connectDB() {
 connectDB();
 
 // ================= HELPERS =================
-function css() {
-return `
-<style>
-body{
-margin:0;
-background:#050505;
-color:white;
-font-family:Arial;
-text-align:center;
-}
-.wrap{
-max-width:700px;
-margin:auto;
-padding:20px;
-}
-.card{
-background:#111;
-padding:25px;
-border-radius:20px;
-box-shadow:0 0 25px #00ffe1;
-margin-top:30px;
-}
-input{
-padding:12px;
-width:260px;
-border:none;
-border-radius:10px;
-background:#222;
-color:white;
-margin:6px;
-}
-button,a.btn{
-padding:12px 18px;
-border:none;
-border-radius:10px;
-background:#00ffe1;
-color:#000;
-font-weight:bold;
-cursor:pointer;
-text-decoration:none;
-display:inline-block;
-margin:5px;
-}
-.err{color:#ff7777}
-.ok{color:#66ff99}
-</style>
-`;
-}
-
-function page(title, body) {
-return `
-<html>
-<head>
-<title>${title}</title>
-${css()}
-</head>
-<body>
-<div class="wrap">
-<div class="card">
-${body}
-</div>
-</div>
-</body>
-</html>
-`;
-}
-
-function requireLogin(req, res, next) {
-  if (!req.session.user) {
-    return res.redirect("/login");
-  }
+function loggedIn(req, res, next) {
+  if (!req.session.user) return res.redirect("/");
   next();
+}
+
+function now() {
+  return Date.now();
+}
+
+function canClaim(last) {
+  if (!last) return true;
+  return now() - last > 86400000;
 }
 
 // ================= HOME =================
 app.get("/", async (req, res) => {
+  if (req.session.user) return res.redirect("/profile");
 
-if (!req.session.user) {
-return res.send(page("Home", `
+  res.send(`
+<!DOCTYPE html>
+<html>
+<head>
+<title>Neon Battle</title>
+<style>
+body{
+background:#050505;
+color:white;
+font-family:Arial;
+text-align:center;
+padding:40px;
+}
+.box{
+max-width:450px;
+margin:auto;
+background:#111;
+padding:30px;
+border-radius:20px;
+box-shadow:0 0 25px #00ffe1;
+}
+input{
+width:90%;
+padding:14px;
+margin:8px;
+border:none;
+border-radius:10px;
+background:#222;
+color:white;
+font-size:16px;
+}
+button{
+padding:14px 24px;
+border:none;
+border-radius:12px;
+background:#00ffe1;
+font-weight:bold;
+cursor:pointer;
+margin-top:10px;
+}
+a{
+color:#00ffe1;
+text-decoration:none;
+}
+</style>
+</head>
+<body>
+<div class="box">
 <h1>⚡ Neon Battle ⚡</h1>
+<h2>Login</h2>
 
-<a class="btn" href="/login">🔐 Login</a>
-<a class="btn" href="/register">📝 Register</a>
+<form method="POST" action="/login">
+<input name="username" placeholder="Username" required><br>
+<input name="password" type="password" placeholder="Password" required><br>
+<button type="submit">LOGIN</button>
+</form>
 
-<p>Create account to save wins & coins.</p>
-`));
-}
-
-let username = req.session.user;
-let user = null;
-
-if (users) {
-  user = await users.findOne({ username });
-}
-
-res.send(page("Dashboard", `
-<h1>Welcome ${username}</h1>
-
-<p>💰 Coins: ${user ? user.coins : 0}</p>
-<p>🏆 Wins: ${user ? user.wins : 0}</p>
-<p>🎮 Games: ${user ? user.games : 0}</p>
-
-<a class="btn" href="/profile">👤 Profile</a>
-<a class="btn" href="/play">🎮 Play</a>
-<a class="btn" href="/logout">🚪 Logout</a>
-`));
-
+<br>
+<a href="/register">Create Account</a>
+</div>
+</body>
+</html>
+`);
 });
 
-// ================= REGISTER =================
+// ================= REGISTER PAGE =================
 app.get("/register", (req, res) => {
-res.send(page("Register", `
+  res.send(`
+<!DOCTYPE html>
+<html>
+<head>
+<title>Register</title>
+<style>
+body{background:#050505;color:white;font-family:Arial;text-align:center;padding:40px}
+.box{max-width:450px;margin:auto;background:#111;padding:30px;border-radius:20px;box-shadow:0 0 25px #00ffe1}
+input{width:90%;padding:14px;margin:8px;border:none;border-radius:10px;background:#222;color:white}
+button{padding:14px 24px;border:none;border-radius:12px;background:#00ffe1;font-weight:bold}
+a{color:#00ffe1}
+</style>
+</head>
+<body>
+<div class="box">
 <h1>Create Account</h1>
 
 <form method="POST" action="/register">
 <input name="username" placeholder="Username" required><br>
-<input type="password" name="password" placeholder="Password" required><br>
-<button type="submit">Register</button>
+<input name="password" type="password" placeholder="Password" required><br>
+<button type="submit">REGISTER</button>
 </form>
 
-<a class="btn" href="/">⬅ Home</a>
-`));
+<br>
+<a href="/">Back</a>
+</div>
+</body>
+</html>
+`);
 });
 
+// ================= REGISTER POST =================
 app.post("/register", async (req, res) => {
-try {
+  const username = req.body.username.trim();
+  const password = req.body.password.trim();
 
-if (!users) {
-return res.send(page("Error", `
-<h1 class="err">Database Offline</h1>
-<a class="btn" href="/">Home</a>
-`));
-}
+  const found = await users.findOne({ username });
 
-let username = String(req.body.username || "").trim();
-let password = String(req.body.password || "");
+  if (found) return res.send("Username already exists.");
 
-if (username.length < 3 || password.length < 4) {
-return res.send(page("Error", `
-<h1 class="err">Invalid details</h1>
-<a class="btn" href="/register">Try Again</a>
-`));
-}
+  const hash = await bcrypt.hash(password, 10);
 
-const exists = await users.findOne({ username });
+  await users.insertOne({
+    username,
+    password: hash,
+    wins: 0,
+    games: 0,
+    coins: 100,
+    created: new Date(),
+    daily: 0
+  });
 
-if (exists) {
-return res.send(page("Error", `
-<h1 class="err">Username Taken</h1>
-<a class="btn" href="/register">Try Again</a>
-`));
-}
-
-const hash = await bcrypt.hash(password, 10);
-
-await users.insertOne({
-username,
-passwordHash: hash,
-wins: 0,
-coins: 0,
-games: 0,
-createdAt: Date.now()
-});
-
-req.session.user = username;
-
-res.redirect("/");
-
-} catch (err) {
-res.send(page("Error", `
-<h1 class="err">Failed</h1>
-<p>${err.message}</p>
-`));
-}
+  res.redirect("/");
 });
 
 // ================= LOGIN =================
-app.get("/login", (req, res) => {
-res.send(page("Login", `
-<h1>Login</h1>
+app.post("/login", async (req, res) => {
+  const username = req.body.username.trim();
+  const password = req.body.password.trim();
 
-<form method="POST" action="/login">
-<input name="username" placeholder="Username" required><br>
-<input type="password" name="password" placeholder="Password" required><br>
-<button type="submit">Login</button>
-</form>
+  const user = await users.findOne({ username });
 
-<a class="btn" href="/">⬅ Home</a>
-`));
+  if (!user) return res.send("User not found.");
+
+  const ok = await bcrypt.compare(password, user.password);
+
+  if (!ok) return res.send("Wrong password.");
+
+  req.session.user = username;
+  res.redirect("/profile");
 });
 
-app.post("/login", async (req, res) => {
-try {
+// ================= PROFILE =================
+app.get("/profile", loggedIn, async (req, res) => {
+  const user = await users.findOne({ username: req.session.user });
 
-if (!users) {
-return res.send(page("Error", `
-<h1 class="err">Database Offline</h1>
-<a class="btn" href="/">Home</a>
-`));
+  res.send(`
+<!DOCTYPE html>
+<html>
+<head>
+<title>Profile</title>
+<style>
+body{
+background:#050505;
+color:white;
+font-family:Arial;
+text-align:center;
+padding:40px;
 }
-
-const username = String(req.body.username || "").trim();
-const password = String(req.body.password || "");
-
-const user = await users.findOne({ username });
-
-if (!user) {
-return res.send(page("Error", `
-<h1 class="err">User Not Found</h1>
-<a class="btn" href="/login">Try Again</a>
-`));
+.box{
+max-width:600px;
+margin:auto;
+background:#111;
+padding:30px;
+border-radius:20px;
+box-shadow:0 0 25px #00ffe1;
 }
-
-const match = await bcrypt.compare(
-password,
-user.passwordHash
-);
-
-if (!match) {
-return res.send(page("Error", `
-<h1 class="err">Wrong Password</h1>
-<a class="btn" href="/login">Try Again</a>
-`));
+.card{
+background:#000;
+padding:18px;
+border-radius:15px;
+margin:10px;
 }
-
-req.session.user = username;
-
-res.redirect("/");
-
-} catch (err) {
-res.send(page("Error", `
-<h1 class="err">Login Failed</h1>
-<p>${err.message}</p>
-`));
+button{
+padding:12px 22px;
+border:none;
+border-radius:12px;
+background:#00ffe1;
+font-weight:bold;
+margin:6px;
+cursor:pointer;
 }
+a{
+text-decoration:none;
+}
+</style>
+</head>
+<body>
+<div class="box">
+
+<h1>👤 ${user.username}</h1>
+
+<div class="card">🏆 Wins: ${user.wins}</div>
+<div class="card">🎮 Games: ${user.games}</div>
+<div class="card">🪙 Coins: ${user.coins}</div>
+
+<form action="/daily" method="POST">
+<button>🎁 Claim Daily Reward</button>
+</form>
+
+<a href="/leaderboard"><button>🏆 Leaderboard</button></a>
+<a href="/logout"><button>🚪 Logout</button></a>
+
+</div>
+</body>
+</html>
+`);
+});
+
+// ================= DAILY REWARD =================
+app.post("/daily", loggedIn, async (req, res) => {
+  const user = await users.findOne({ username: req.session.user });
+
+  if (!canClaim(user.daily)) {
+    return res.send("Daily reward already claimed. Come back tomorrow.");
+  }
+
+  await users.updateOne(
+    { username: req.session.user },
+    {
+      $inc: { coins: 25 },
+      $set: { daily: now() }
+    }
+  );
+
+  res.redirect("/profile");
+});
+
+// ================= LEADERBOARD =================
+app.get("/leaderboard", async (req, res) => {
+  const top = await users
+    .find({})
+    .sort({ wins: -1 })
+    .limit(10)
+    .toArray();
+
+  let html = "";
+
+  top.forEach((u, i) => {
+    html += `<div class="card">${i + 1}. ${u.username} - ${u.wins} wins - ${u.coins} coins</div>`;
+  });
+
+  res.send(`
+<!DOCTYPE html>
+<html>
+<head>
+<title>Leaderboard</title>
+<style>
+body{background:#050505;color:white;font-family:Arial;text-align:center;padding:40px}
+.box{max-width:650px;margin:auto;background:#111;padding:30px;border-radius:20px;box-shadow:0 0 25px #00ffe1}
+.card{background:#000;padding:15px;border-radius:12px;margin:10px}
+button{padding:12px 22px;border:none;border-radius:12px;background:#00ffe1;font-weight:bold}
+</style>
+</head>
+<body>
+<div class="box">
+<h1>🏆 Leaderboard</h1>
+${html}
+<a href="/profile"><button>Back</button></a>
+</div>
+</body>
+</html>
+`);
 });
 
 // ================= LOGOUT =================
 app.get("/logout", (req, res) => {
-req.session.destroy(() => {
-res.redirect("/");
-});
-});
-
-// ================= PROFILE =================
-app.get("/profile", requireLogin, async (req, res) => {
-
-let username = req.session.user;
-let user = users
-  ? await users.findOne({ username })
-  : null;
-
-res.send(page("Profile", `
-<h1>👤 ${username}</h1>
-
-<p>💰 Coins: ${user ? user.coins : 0}</p>
-<p>🏆 Wins: ${user ? user.wins : 0}</p>
-<p>🎮 Games: ${user ? user.games : 0}</p>
-
-<a class="btn" href="/">⬅ Dashboard</a>
-`));
-
+  req.session.destroy(() => {
+    res.redirect("/");
+  });
 });
 
-// ================= PLAY =================
-app.get("/play", requireLogin, (req, res) => {
-res.send(page("Play", `
-<h1>🎮 Multiplayer Game Next Step</h1>
-<p>Logged in as ${req.session.user}</p>
+// ================= TEST WIN ROUTE =================
+// Use later for game winner reward
+app.get("/testwin", loggedIn, async (req, res) => {
+  await users.updateOne(
+    { username: req.session.user },
+    {
+      $inc: {
+        wins: 1,
+        coins: 50,
+        games: 1
+      }
+    }
+  );
 
-<a class="btn" href="/">⬅ Dashboard</a>
-`));
+  res.redirect("/profile");
 });
 
 // ================= START =================
 app.listen(PORT, () => {
-console.log("Running on " + PORT);
+  console.log("Neon Battle V8.2 running on port " + PORT);
 });
