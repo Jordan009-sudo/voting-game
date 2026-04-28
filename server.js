@@ -1,5 +1,6 @@
-// V8.3 FULL STABLE ACCOUNTS
+// BUILD V8.4 FULL
 // server.js
+// Neon Battle - Accounts + Auto Join + Rewards + Leaderboard + Skins + Match Stats
 
 const express = require("express");
 const http = require("http");
@@ -16,19 +17,19 @@ const io = new Server(server);
 const PORT = process.env.PORT || 3000;
 const MONGO_URI = process.env.MONGO_URI;
 
+// ---------------- APP ----------------
 app.use(express.urlencoded({ extended: true }));
 app.use(express.json());
 app.use(cookieParser());
 
-// ================= DATABASE =================
+// ---------------- DB ----------------
 let users;
 
 async function connectDB() {
   try {
     const client = new MongoClient(MONGO_URI);
     await client.connect();
-    const db = client.db("neonbattle");
-    users = db.collection("users");
+    users = client.db("neonbattle").collection("users");
     console.log("Mongo Connected ✅");
   } catch (err) {
     console.log("Mongo Failed ❌", err.message);
@@ -36,260 +37,292 @@ async function connectDB() {
 }
 connectDB();
 
-// ================= SIMPLE SESSION =================
+// ---------------- SESSION ----------------
 const sessions = {};
 
-function createSession(username) {
-  const token = crypto.randomBytes(24).toString("hex");
-  sessions[token] = username;
-  return token;
+function makeToken() {
+  return crypto.randomBytes(24).toString("hex");
 }
 
-function getUser(req) {
+function loginUser(res, username) {
+  const token = makeToken();
+  sessions[token] = username;
+  res.cookie("token", token);
+}
+
+function getUsername(req) {
   const token = req.cookies.token;
   if (!token) return null;
   return sessions[token] || null;
 }
 
-// ================= HELPERS =================
-async function createLegacySafeUser(username) {
-  if (!users) return;
+// ---------------- HELPERS ----------------
+async function ensureUser(username) {
+  if (!users) return null;
 
-  const found = await users.findOne({ username });
+  let user = await users.findOne({ username });
 
-  if (!found) {
+  if (!user) {
     await users.insertOne({
       username,
       password: null,
       wins: 0,
       coins: 0,
       games: 0,
-      skin: "cyan"
+      eliminations: 0,
+      rounds: 0,
+      skin: "cyan",
+      claimedDaily: 0
     });
+
+    user = await users.findOne({ username });
   }
+
+  return user;
 }
 
-// ================= PAGES =================
-
-// HOME
-app.get("/", (req, res) => {
-  const me = getUser(req);
-
-  res.send(`
+function page(title, body) {
+  return `
   <html>
   <head>
-  <title>Neon Battle</title>
+  <title>${title}</title>
+  <meta name="viewport" content="width=device-width,initial-scale=1">
   <style>
   body{
     background:#050505;
     color:white;
     font-family:Arial;
     text-align:center;
-    padding:40px;
+    padding:25px;
   }
   .box{
-    max-width:700px;
+    max-width:760px;
     margin:auto;
     background:#111;
-    padding:30px;
-    border-radius:20px;
-    box-shadow:0 0 30px cyan;
+    padding:25px;
+    border-radius:18px;
+    box-shadow:0 0 25px cyan;
   }
-  a,button{
-    display:inline-block;
-    margin:8px;
-    padding:12px 18px;
-    background:cyan;
-    color:black;
-    text-decoration:none;
+  input,button,a{
+    padding:12px;
+    margin:6px;
     border:none;
     border-radius:10px;
+    font-size:16px;
+    text-decoration:none;
+    display:inline-block;
+  }
+  input{background:#222;color:#fff}
+  button,a{
+    background:cyan;
+    color:#000;
     font-weight:bold;
     cursor:pointer;
+  }
+  table{
+    width:100%;
+    border-collapse:collapse;
+    margin-top:15px;
+  }
+  td,th{
+    padding:8px;
+    border-bottom:1px solid #333;
   }
   </style>
   </head>
   <body>
-    <div class="box">
-      <h1>⚡ Neon Battle ⚡</h1>
-
-      ${
-        me
-          ? `
-          <h2>Welcome ${me}</h2>
-          <a href="/profile">Profile</a>
-          <a href="/game">Enter Game</a>
-          <a href="/logout">Logout</a>
-        `
-          : `
-          <a href="/register">Register</a>
-          <a href="/login">Login</a>
-        `
-      }
-    </div>
+    <div class="box">${body}</div>
   </body>
   </html>
-  `);
+  `;
+}
+
+// ---------------- HOME ----------------
+app.get("/", async (req, res) => {
+  const me = getUsername(req);
+
+  res.send(page("Neon Battle", `
+    <h1>⚡ Neon Battle ⚡</h1>
+    ${
+      me
+      ? `
+      <h2>Welcome ${me}</h2>
+      <a href="/profile">Profile</a>
+      <a href="/game">Play</a>
+      <a href="/leaderboard">Leaderboard</a>
+      <a href="/logout">Logout</a>
+      `
+      : `
+      <a href="/register">Register</a>
+      <a href="/login">Login</a>
+      `
+    }
+  `));
 });
 
-// REGISTER
+// ---------------- REGISTER ----------------
 app.get("/register", (req, res) => {
-  res.send(`
-  <html><body style="background:#050505;color:white;text-align:center;font-family:Arial;padding:50px">
-  <h1>Register</h1>
-  <form method="POST">
-    <input name="username" placeholder="Username" required><br><br>
-    <input name="password" type="password" placeholder="Password" required><br><br>
-    <button>Register</button>
-  </form>
-  <br><a href="/">Home</a>
-  </body></html>
-  `);
+  res.send(page("Register", `
+    <h1>Create Account</h1>
+    <form method="POST">
+      <input name="username" placeholder="Username" required><br>
+      <input name="password" type="password" placeholder="Password" required><br>
+      <button>Register</button>
+    </form>
+    <a href="/">Home</a>
+  `));
 });
 
 app.post("/register", async (req, res) => {
-  try {
-    const username = String(req.body.username || "").trim();
-    const password = String(req.body.password || "");
+  const username = String(req.body.username || "").trim();
+  const password = String(req.body.password || "");
 
-    if (!username || !password) {
-      return res.send("Fill all fields");
-    }
+  if (!username || !password) return res.send("Missing info");
 
-    const exists = await users.findOne({ username });
+  const exists = await users.findOne({ username });
+  if (exists) return res.send("Username taken");
 
-    if (exists) {
-      return res.send("Username taken");
-    }
+  const hash = await bcrypt.hash(password, 10);
 
-    const hash = await bcrypt.hash(password, 10);
+  await users.insertOne({
+    username,
+    password: hash,
+    wins: 0,
+    coins: 0,
+    games: 0,
+    eliminations: 0,
+    rounds: 0,
+    skin: "cyan",
+    claimedDaily: 0
+  });
 
-    await users.insertOne({
-      username,
-      password: hash,
-      wins: 0,
-      coins: 0,
-      games: 0,
-      skin: "cyan"
-    });
-
-    res.redirect("/login");
-  } catch (err) {
-    res.send("Register failed");
-  }
+  res.redirect("/login");
 });
 
-// LOGIN
+// ---------------- LOGIN ----------------
 app.get("/login", (req, res) => {
-  res.send(`
-  <html><body style="background:#050505;color:white;text-align:center;font-family:Arial;padding:50px">
-  <h1>Login</h1>
-  <form method="POST">
-    <input name="username" placeholder="Username" required><br><br>
-    <input name="password" type="password" placeholder="Password" required><br><br>
-    <button>Login</button>
-  </form>
-  <br><a href="/">Home</a>
-  </body></html>
-  `);
+  res.send(page("Login", `
+    <h1>Login</h1>
+    <form method="POST">
+      <input name="username" placeholder="Username" required><br>
+      <input name="password" type="password" placeholder="Password" required><br>
+      <button>Login</button>
+    </form>
+    <a href="/">Home</a>
+  `));
 });
 
 app.post("/login", async (req, res) => {
-  try {
-    const username = String(req.body.username || "").trim();
-    const password = String(req.body.password || "");
+  const username = String(req.body.username || "").trim();
+  const password = String(req.body.password || "");
 
-    const user = await users.findOne({ username });
+  const user = await users.findOne({ username });
+  if (!user) return res.send("User not found");
 
-    if (!user) return res.send("User not found");
-
-    // old accounts
-    if (!user.password) {
-      const newHash = await bcrypt.hash(password, 10);
-
-      await users.updateOne(
-        { username },
-        { $set: { password: newHash } }
-      );
-    }
-
-    const fresh = await users.findOne({ username });
-
-    const ok = await bcrypt.compare(password, fresh.password);
-
-    if (!ok) return res.send("Wrong password");
-
-    const token = createSession(username);
-    res.cookie("token", token);
-
-    res.redirect("/profile");
-  } catch (err) {
-    console.log(err);
-    res.send("Login failed");
+  if (!user.password) {
+    const hash = await bcrypt.hash(password, 10);
+    await users.updateOne({ username }, { $set: { password: hash } });
   }
+
+  const fresh = await users.findOne({ username });
+  const ok = await bcrypt.compare(password, fresh.password);
+
+  if (!ok) return res.send("Wrong password");
+
+  loginUser(res, username);
+  res.redirect("/profile");
 });
 
-// PROFILE
+// ---------------- LOGOUT ----------------
+app.get("/logout", (req, res) => {
+  const token = req.cookies.token;
+  delete sessions[token];
+  res.clearCookie("token");
+  res.redirect("/");
+});
+
+// ---------------- PROFILE ----------------
 app.get("/profile", async (req, res) => {
-  const me = getUser(req);
+  const me = getUsername(req);
   if (!me) return res.redirect("/login");
 
-  const user = await users.findOne({ username: me });
+  const u = await ensureUser(me);
 
-  res.send(`
-  <html>
-  <body style="background:#050505;color:white;text-align:center;font-family:Arial;padding:40px">
-  <h1>👤 ${me}</h1>
-  <h2>🏆 Wins: ${user.wins || 0}</h2>
-  <h2>🪙 Coins: ${user.coins || 0}</h2>
-  <h2>🎮 Games: ${user.games || 0}</h2>
-  <h2>🎨 Skin: ${user.skin || "cyan"}</h2>
-  <br>
-  <a href="/shop">Shop</a><br><br>
-  <a href="/game">Play</a><br><br>
-  <a href="/">Home</a>
-  </body>
-  </html>
-  `);
+  res.send(page("Profile", `
+    <h1>👤 ${me}</h1>
+    <h3>🏆 Wins: ${u.wins}</h3>
+    <h3>🪙 Coins: ${u.coins}</h3>
+    <h3>🎮 Games: ${u.games}</h3>
+    <h3>💀 Eliminations: ${u.eliminations}</h3>
+    <h3>🌀 Rounds Survived: ${u.rounds}</h3>
+    <h3>🎨 Skin: ${u.skin}</h3>
+
+    <a href="/daily">Daily Reward</a>
+    <a href="/shop">Shop</a>
+    <a href="/leaderboard">Leaderboard</a>
+    <a href="/game">Play</a>
+    <a href="/">Home</a>
+  `));
 });
 
-// SHOP
-app.get("/shop", async (req, res) => {
-  const me = getUser(req);
+// ---------------- DAILY ----------------
+app.get("/daily", async (req, res) => {
+  const me = getUsername(req);
   if (!me) return res.redirect("/login");
 
-  const user = await users.findOne({ username: me });
+  const user = await ensureUser(me);
+  const now = Date.now();
 
-  res.send(`
-  <html>
-  <body style="background:#050505;color:white;text-align:center;font-family:Arial;padding:40px">
-  <h1>🛒 Shop</h1>
-  <h2>Coins: ${user.coins}</h2>
+  if (now - user.claimedDaily < 86400000) {
+    return res.send("Already claimed today.");
+  }
 
-  <a href="/buy/red">Buy Red Skin (100)</a><br><br>
-  <a href="/buy/gold">Buy Gold Skin (250)</a><br><br>
-  <a href="/profile">Back</a>
-  </body>
-  </html>
-  `);
+  await users.updateOne(
+    { username: me },
+    {
+      $inc: { coins: 50 },
+      $set: { claimedDaily: now }
+    }
+  );
+
+  res.redirect("/profile");
+});
+
+// ---------------- SHOP ----------------
+app.get("/shop", async (req, res) => {
+  const me = getUsername(req);
+  if (!me) return res.redirect("/login");
+
+  const u = await ensureUser(me);
+
+  res.send(page("Shop", `
+    <h1>🛒 Shop</h1>
+    <h2>Coins: ${u.coins}</h2>
+
+    <a href="/buy/red">Red Skin (100)</a>
+    <a href="/buy/gold">Gold Skin (250)</a>
+    <a href="/buy/green">Green Skin (150)</a>
+    <br><br>
+    <a href="/profile">Back</a>
+  `));
 });
 
 app.get("/buy/:skin", async (req, res) => {
-  const me = getUser(req);
+  const me = getUsername(req);
   if (!me) return res.redirect("/login");
-
-  const skin = req.params.skin;
 
   const prices = {
     red: 100,
-    gold: 250
+    gold: 250,
+    green: 150
   };
 
+  const skin = req.params.skin;
   if (!prices[skin]) return res.redirect("/shop");
 
-  const user = await users.findOne({ username: me });
+  const u = await ensureUser(me);
 
-  if (user.coins < prices[skin]) {
+  if (u.coins < prices[skin]) {
     return res.send("Not enough coins");
   }
 
@@ -304,72 +337,169 @@ app.get("/buy/:skin", async (req, res) => {
   res.redirect("/profile");
 });
 
-// LOGOUT
-app.get("/logout", (req, res) => {
-  const token = req.cookies.token;
-  delete sessions[token];
-  res.clearCookie("token");
-  res.redirect("/");
+// ---------------- LEADERBOARD ----------------
+app.get("/leaderboard", async (req, res) => {
+  const topWins = await users.find().sort({ wins: -1 }).limit(10).toArray();
+
+  let rows = "";
+  topWins.forEach((u, i) => {
+    rows += `
+      <tr>
+        <td>${i + 1}</td>
+        <td>${u.username}</td>
+        <td>${u.wins}</td>
+        <td>${u.coins}</td>
+      </tr>
+    `;
+  });
+
+  res.send(page("Leaderboard", `
+    <h1>🏆 Leaderboard</h1>
+    <table>
+      <tr>
+        <th>#</th>
+        <th>Name</th>
+        <th>Wins</th>
+        <th>Coins</th>
+      </tr>
+      ${rows}
+    </table>
+    <br>
+    <a href="/">Home</a>
+  `));
 });
 
-// ================= GAME PAGE =================
+// ---------------- GAME PAGE ----------------
 app.get("/game", (req, res) => {
-  res.send(`
-  <html>
-  <body style="background:#000;color:#fff;text-align:center;font-family:Arial;padding:30px">
-  <h1>⚡ Neon Battle Lobby ⚡</h1>
-  <h2 id="status">Connecting...</h2>
-  <div id="players"></div>
-  <button onclick="score()">TAP!</button>
+  const me = getUsername(req);
+  if (!me) return res.redirect("/login");
 
-  <script src="/socket.io/socket.io.js"></script>
-  <script>
-  const socket = io();
+  res.send(page("Game", `
+    <h1>⚡ Neon Battle ⚡</h1>
+    <h2 id="status">Joining...</h2>
+    <h3 id="timer"></h3>
+    <button onclick="tap()">TAP!</button>
+    <div id="players"></div>
 
-  function score(){
-    socket.emit("score");
-  }
+    <script src="/socket.io/socket.io.js"></script>
+    <script>
+      const socket = io();
 
-  socket.on("message", t=>{
-    document.getElementById("status").innerText=t;
-  });
+      socket.emit("joinAuto", "${me}");
 
-  socket.on("players", list=>{
-    document.getElementById("players").innerHTML =
-      list.map(x=>x.name).join("<br>");
-  });
-  </script>
-  </body>
-  </html>
-  `);
+      function tap(){
+        socket.emit("score");
+      }
+
+      socket.on("message", t=>{
+        document.getElementById("status").innerText=t;
+      });
+
+      socket.on("tick", t=>{
+        document.getElementById("timer").innerText="⏱ "+t;
+      });
+
+      socket.on("players", list=>{
+        document.getElementById("players").innerHTML =
+          list.map(p=>p.name).join("<br>");
+      });
+
+      socket.on("winner", n=>{
+        document.getElementById("status").innerText="👑 "+n+" wins!";
+      });
+    </script>
+  `));
 });
 
-// ================= GAME SERVER =================
+// ---------------- GAME SERVER ----------------
 let players = [];
 let scores = {};
-let started = false;
+let playing = false;
+let timer = 10;
+let loop = null;
 
-io.on("connection", socket => {
-  socket.on("score", () => {
-    scores[socket.id] = (scores[socket.id] || 0) + 1;
+function resetMatch() {
+  players = [];
+  scores = {};
+  playing = false;
+  if (loop) clearInterval(loop);
+}
+
+function startRound() {
+  if (players.length < 2) return;
+
+  playing = true;
+  timer = 10;
+  scores = {};
+
+  players.forEach(p => scores[p.id] = 0);
+
+  io.emit("message", "⚡ TAP FAST!");
+  io.emit("tick", timer);
+
+  loop = setInterval(async () => {
+    timer--;
+    io.emit("tick", timer);
+
+    await users.updateMany({}, { $inc: { rounds: 1 } });
+
+    if (timer <= 0) {
+      clearInterval(loop);
+      endRound();
+    }
+  }, 1000);
+}
+
+async function endRound() {
+  playing = false;
+
+  const sorted = [...players].sort((a, b) => {
+    return (scores[b.id] || 0) - (scores[a.id] || 0);
   });
 
+  const winner = sorted[0];
+
+  if (winner) {
+    await users.updateOne(
+      { username: winner.name },
+      { $inc: { wins: 1, coins: 100 } }
+    );
+
+    io.emit("winner", winner.name);
+  }
+
+  resetMatch();
+}
+
+io.on("connection", socket => {
+
   socket.on("joinAuto", async username => {
+    if (players.find(p => p.name === username)) return;
     if (players.length >= 5) return;
+
+    await ensureUser(username);
 
     players.push({
       id: socket.id,
       name: username
     });
 
-    io.emit("players", players);
-    io.emit("message", players.length + "/5 Joined");
-
-    await createLegacySafeUser(username);
     await users.updateOne(
       { username },
       { $inc: { games: 1 } }
     );
+
+    io.emit("players", players);
+    io.emit("message", players.length + "/5 Joined");
+
+    if (players.length >= 2 && !playing) {
+      setTimeout(startRound, 2000);
+    }
+  });
+
+  socket.on("score", () => {
+    if (!playing) return;
+    scores[socket.id] = (scores[socket.id] || 0) + 1;
   });
 
   socket.on("disconnect", () => {
@@ -378,12 +508,7 @@ io.on("connection", socket => {
   });
 });
 
-// auto join if logged in
-io.use((socket, next) => {
-  next();
-});
-
-// ================= START =================
+// ---------------- START ----------------
 server.listen(PORT, () => {
   console.log("Running on " + PORT);
 });
